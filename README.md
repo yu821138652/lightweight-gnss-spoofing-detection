@@ -100,6 +100,37 @@ new_building
 
 后续跨环境实验必须依赖该字段。
 
+
+## 生成数据清单
+
+数据清单用于记录每个原始 GNSS 日志的环境、场景、设备、文件路径和处理状态。生成命令：
+
+```bash
+python scripts/build_data_manifest.py
+```
+
+默认会扫描：
+
+```text
+H:\GNSS\real_world_spoofing_dataset_pipeline\data_raw
+```
+
+并输出：
+
+```text
+docs/data_manifest.csv
+```
+
+当前清单统计：
+
+```text
+raw logs: 133
+playground: 98
+new_building: 35
+```
+
+`label_status` 初始均为 `unreviewed`，后续人工看图确认标签后再更新。
+
 ## 推荐流程
 
 1. 检查 `real_world_spoofing_dataset_pipeline` 的目录结构是否规范。
@@ -164,3 +195,4 @@ TTD 检测时间评估
 本项目后续应始终围绕一句话展开：
 
 > 不是做最大最复杂的 GNSS 欺骗检测模型，而是做一个能在真实多设备、多环境中稳定工作的轻量化、可部署 GNSS 导航欺骗检测框架。
+
