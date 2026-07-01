@@ -1,4 +1,4 @@
-﻿# 第二篇论文最新项目主线：轻量化 GNSS 导航欺骗检测
+﻿# 面向真实多设备部署的轻量化 GNSS 导航欺骗检测方法研究
 
 ## 1. 最新主线定位
 
@@ -195,19 +195,19 @@ false alarms per minute
 英文题目可考虑：
 
 ```text
-Lite-GNSSGuard: Lightweight Cross-Environment GNSS Spoofing Detection for Real-World Multi-Device Deployment
+面向真实多设备部署的轻量化 GNSS 导航欺骗检测方法研究
 ```
 
 中文定位可写成：
 
 ```text
-面向真实多设备部署的轻量化跨环境 GNSS 导航欺骗检测框架
+面向真实多设备部署的轻量化 GNSS 导航欺骗检测方法研究
 ```
 
 也可以简化为：
 
 ```text
-面向边缘部署的轻量化 GNSS 导航欺骗检测方法
+面向真实多设备部署的轻量化 GNSS 导航欺骗检测方法研究
 ```
 
 ---
@@ -231,7 +231,7 @@ PatchTST-small
 
 目标不是一开始就追求最复杂结构，而是先证明少特征轻量模型能在真实数据上工作。
 
-### 6.2 第二阶段：形成主模型 Lite-GNSSGuard
+### 6.2 第二阶段：形成主模型
 
 主模型可以设计为：
 
@@ -403,3 +403,4 @@ edge CPU latency
 > 不是做最大最复杂的 GNSS 欺骗检测模型，而是做一个能在真实多设备、多环境中稳定工作的轻量化、可部署 GNSS 导航欺骗检测框架。
 
 这条主线聚焦、数据可信、工程价值明确，也更适合围绕后续实际部署持续推进。
+

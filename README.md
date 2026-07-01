@@ -1,12 +1,12 @@
-﻿# Lite GNSS Spoofing Detection
+﻿# 面向真实多设备部署的轻量化 GNSS 导航欺骗检测方法研究
 
 This repository is the clean project workspace for the second GNSS paper.
 
 ## Project Mainline
 
-**Lightweight GNSS navigation spoofing detection for real-world multi-device deployment.**
+**面向真实多设备部署的轻量化 GNSS 导航欺骗检测方法研究**
 
-The project focuses on lightweight, deployable models using only GNSS Raw features available from real phones, watches, and u-blox receivers. The main experiments should validate cross-environment, cross-device, cross-frequency, and deployment-oriented performance.
+The project focuses on lightweight, deployable GNSS navigation spoofing detection using only GNSS Raw features available from real phones, watches, and u-blox receivers. The main experiments should validate cross-environment, cross-device, cross-frequency, and deployment-oriented performance.
 
 ## What Belongs Here
 

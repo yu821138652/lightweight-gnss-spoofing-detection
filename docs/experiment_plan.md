@@ -1,8 +1,8 @@
-﻿# Experiment Plan
+﻿# 面向真实多设备部署的轻量化 GNSS 导航欺骗检测方法研究：实验计划
 
 ## Main Task
 
-Real-device lightweight GNSS navigation spoofing detection.
+面向真实多设备部署的轻量化 GNSS 导航欺骗检测方法研究
 
 Primary labels:
 
@@ -59,7 +59,7 @@ PatchTST-small
 
 ## Main Model Direction
 
-`Lite-GNSSGuard`:
+Main lightweight model:
 
 ```text
 lightweight temporal model
@@ -95,3 +95,4 @@ Memory usage
 ONNX latency if available
 Android/edge latency if available
 ```
+
