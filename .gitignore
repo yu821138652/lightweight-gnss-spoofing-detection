@@ -1,0 +1,51 @@
+﻿# Ignore generated files and large local data
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+.env
+
+# Outputs
+output/
+outputs/
+runs/
+checkpoints/
+models/*.pth
+models/*.pt
+models/*.onnx
+*.log
+
+# Large data and local copies
+data/
+data_raw/
+raw_data/
+final_mat/
+*.mat
+*.zip
+*.rar
+*.7z
+*.ubx
+*.obs
+*.nav
+*.25O
+*.25P
+*.nmea
+*.xlsx
+
+# Generated arrays / datasets
+*.npz
+*.npy
+processed_gnss_data*.csv
+*-raw.csv
+*-raw_sort*.csv
+*-features_enhanced.csv
+*-plot_features.csv
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
