@@ -1,6 +1,6 @@
 ﻿# 面向真实多设备部署的轻量化 GNSS 导航欺骗检测方法研究
 
-This repository is the clean project workspace for the second GNSS paper.
+This repository is the clean project workspace for this GNSS research project.
 
 ## Project Mainline
 
@@ -26,7 +26,7 @@ Large raw datasets are intentionally **not** copied into this repository.
 |---|---|---|
 | Main data 1 | `H:\GNSS\data_raw` | Playground/campus spoofing data |
 | Main data 2 | `H:\GNSS\导航欺骗新主楼数据集及全流程处理脚本\导航欺骗新主楼数据集及全流程处理脚本\0729` | New-main-building spoofing data |
-| Auxiliary | `H:\GNSS\Finland L1_E1 data\final_mat` | First-paper rich-feature data / teacher / reference |
+| Auxiliary | `H:\GNSS\Finland L1_E1 data\final_mat` | Rich-feature software-receiver data / teacher / reference |
 | Excluded for now | `H:\GNSS\Interference Data` | Label reliability uncertain; not part of the main paper line |
 
 ## Recommended Workflow
@@ -41,3 +41,4 @@ Large raw datasets are intentionally **not** copied into this repository.
 8. Report deployment metrics: params, FLOPs/MACs, model size, CPU latency, memory, FAR, and TTD.
 
 See `docs/project_mainline.md` for the detailed project plan.
+

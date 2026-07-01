@@ -52,7 +52,7 @@ H:\GNSS\Finland L1_E1 data\final_mat
 
 Role:
 
-- first-paper rich-feature software receiver data;
+- rich-feature software receiver data from prior work;
 - useful as a strong baseline or teacher source;
 - not the main deployment dataset.
 
@@ -66,10 +66,11 @@ H:\GNSS\Interference Data
 
 Current decision:
 
-- not included in the second-paper mainline;
+- not included in the main research line;
 - labels are not trusted enough for main experiments;
 - keep as a future extension or exploratory source only.
 
 ## Data Policy
 
 Do not commit raw large data files to GitHub. Keep raw data local or upload it to a dedicated data storage service if sharing is required.
+
