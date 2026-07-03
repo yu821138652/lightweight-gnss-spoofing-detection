@@ -73,9 +73,47 @@ real_world_spoofing_dataset_pipeline
 
 > 注意：原始数据、处理后大 CSV、NPZ 张量、模型权重等不要直接提交到 GitHub。
 
-## 核心特征
+## 特征提取约定
 
-当前优先使用真实设备容易获得的 GNSS Raw 特征：
+本项目的正式数据处理流程统一从原始 GNSS 日志 `.txt` 文件中重新解析所需字段，不直接依赖历史生成的 `raw.csv`、`raw_sort.csv`、`plot_features.csv` 或 `features_enhanced.csv`。这些历史 CSV 可以作为参考或检查用，但不作为正式实验数据来源。
+
+统一处理流程如下：
+
+```text
+原始 GNSS txt 日志
+  -> 解析 Raw 观测字段
+  -> 计算 TOW / sv_id / FreqBand
+  -> 从目录结构补充 Environment / Scenario / DeviceName / SpoofingType
+  -> 计算 C/N0 差分和滑窗统计特征
+  -> 根据人工确认的 TOW 欺骗区间生成 Label
+  -> 输出统一 processed_gnss_data.csv
+```
+
+### 最终保留字段
+
+正式输出的统一数据表建议保留以下字段：
+
+```text
+TimeNanos
+TOW
+utcTimeMillis
+Environment
+Scenario
+DeviceName
+sv_id
+FreqBand
+SpoofingType
+Label
+Cn0DbHz
+Cn0DbHz_dt
+Cn0DbHz_std
+AgcDb
+ReceivedSvTimeUncertaintyNanos
+PseudorangeRateUncertaintyMetersPerSecond
+AccumulatedDeltaRangeUncertaintyMeters
+```
+
+其中，真正作为模型输入的核心特征为：
 
 ```text
 Cn0DbHz
@@ -86,20 +124,107 @@ ReceivedSvTimeUncertaintyNanos
 PseudorangeRateUncertaintyMetersPerSecond
 AccumulatedDeltaRangeUncertaintyMeters
 FreqBand
-sv_id
-DeviceName
-Environment
 ```
 
-其中 `Environment` 用于区分：
+其他字段用于排序、分组、标签生成、跨环境/跨设备实验划分和结果分析，不建议直接作为模型输入。
+
+### 字段来源说明
+
+| 字段 | 来源 | 说明 |
+|---|---|---|
+| `TimeNanos` | 原始 txt 中 Raw 行自带 | 接收机内部 GNSS 时钟时间，单位 ns，用于时间计算和排序 |
+| `utcTimeMillis` | 原始 txt 中 Raw 行自带 | 手机记录该观测时的 UTC 时间，单位 ms，用于追溯和对齐 |
+| `TOW` | 脚本计算 | 根据 `TimeNanos`、`FullBiasNanos`、`BiasNanos`、`ReceivedSvTimeNanos` 等字段计算 |
+| `Environment` | 路径补充 | 由目录判断，例如 `playground` 或 `new_building` |
+| `Scenario` | 路径补充 | 由目录判断，例如 `st_L1`、`dy_L5`、`st_L_15` |
+| `DeviceName` | 日志头解析 + 路径兜底 | 优先从日志设备型号解析，解析失败时使用设备文件夹名 |
+| `sv_id` | 脚本计算 | 由 `ConstellationType` 和 `Svid` 组合生成，例如 `G29`、`E12` |
+| `FreqBand` | 脚本计算 | 由 `CarrierFrequencyHz` 判断 L1/L5 |
+| `SpoofingType` | 路径/规则生成 | 第一版可直接设为 `Scenario` |
+| `Label` | 标签配置生成 | 根据人工确认的欺骗 TOW 区间生成，正常为 0，欺骗为 1 |
+| `Cn0DbHz` | 原始 txt 中 Raw 行自带 | 载噪比 C/N0，反映卫星信号质量 |
+| `Cn0DbHz_dt` | 脚本计算 | 同一颗卫星相邻时刻 C/N0 的差分，用于捕捉突变 |
+| `Cn0DbHz_std` | 脚本计算 | 同一颗卫星滑动窗口内 C/N0 标准差，用于描述短时波动 |
+| `AgcDb` | 原始 txt 中 Raw 行通常自带 | 自动增益控制值，反映接收机前端对输入信号强弱的调节 |
+| `ReceivedSvTimeUncertaintyNanos` | 原始 txt 中 Raw 行自带 | 卫星发射时间估计不确定度，单位 ns |
+| `PseudorangeRateUncertaintyMetersPerSecond` | 原始 txt 中 Raw 行自带 | 伪距率不确定度，单位 m/s |
+| `AccumulatedDeltaRangeUncertaintyMeters` | 原始 txt 中 Raw 行自带 | ADR 累计增量距离不确定度，单位 m |
+
+### 时间字段使用原则
+
+`TimeNanos`、`utcTimeMillis` 和 `TOW` 需要保留，但不建议直接作为模型输入特征。
+
+它们主要用于：
 
 ```text
-playground
-new_building
+数据排序
+时间对齐
+TOW 标签区间匹配
+滑窗切片
+差分/统计特征计算
+TTD 检测时间统计
+实验结果追溯
 ```
 
-后续跨环境实验必须依赖该字段。
+如果直接把绝对时间字段作为模型输入，模型可能学到“某个时间段对应欺骗”，而不是学习 GNSS 信号本身的异常模式。这会削弱跨环境、跨设备和未来部署时的泛化能力。
 
+### 标签生成原则
+
+`Label` 不从原始 txt 直接读取，而是根据人工确认的欺骗 TOW 区间生成。
+
+建议标签规则为：
+
+```text
+Label = 0：正常
+Label = 1：导航欺骗
+```
+
+对于不同场景：
+
+```text
+st_L1 / dy_L1：只对 L1 频段观测打欺骗标签
+st_L5 / dy_L5：只对 L5 频段观测打欺骗标签
+st_L_15 / dy_L_15：L1 和 L5 均可打欺骗标签
+```
+
+标签区间必须经过可视化复核，不能只依赖旧配置或历史 CSV。
+
+### 缺失值注意事项
+
+不同设备和日志版本的 Raw 字段可能存在差异。虽然核心字段在大多数日志中都能解析到，但仍需要统计缺失情况，尤其是：
+
+```text
+AgcDb
+ReceivedSvTimeUncertaintyNanos
+PseudorangeRateUncertaintyMetersPerSecond
+AccumulatedDeltaRangeUncertaintyMeters
+```
+
+正式训练前应检查每个设备、每个环境、每个场景的字段缺失率。若某个字段在某类设备中大量缺失，需要统一处理策略，例如：
+
+```text
+剔除该设备/日志
+使用缺失值标记
+使用合理填充值
+单独做无该字段的消融实验
+```
+
+### 第一版核心特征集
+
+第一版模型输入固定为 8 个核心特征：
+
+```text
+Cn0DbHz
+Cn0DbHz_dt
+Cn0DbHz_std
+AgcDb
+ReceivedSvTimeUncertaintyNanos
+PseudorangeRateUncertaintyMetersPerSecond
+AccumulatedDeltaRangeUncertaintyMeters
+FreqBand
+```
+
+这组特征数量少、来源清晰、真实设备可获得，符合轻量化部署主线。后续如果需要扩展特征，应通过消融实验验证其贡献，避免盲目堆叠特征。
 
 ## 生成数据清单
 
@@ -195,4 +320,5 @@ TTD 检测时间评估
 本项目后续应始终围绕一句话展开：
 
 > 不是做最大最复杂的 GNSS 欺骗检测模型，而是做一个能在真实多设备、多环境中稳定工作的轻量化、可部署 GNSS 导航欺骗检测框架。
+
 
