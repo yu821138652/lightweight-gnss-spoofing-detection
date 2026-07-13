@@ -85,6 +85,9 @@ def build_one_csv(txt_path: Path, output_path: Path, mirror_root: Path, config: 
         logging.warning("No valid data after parsing/filtering: %s", txt_path)
         return False, 0
 
+    df['SourceFile'] = txt_path.name
+    df['SourceRelativePath'] = txt_path.relative_to(mirror_root).as_posix()
+
     final_columns = config.get(
         "final_columns",
         [
@@ -93,11 +96,25 @@ def build_one_csv(txt_path: Path, output_path: Path, mirror_root: Path, config: 
             "utcTimeMillis",
             "Environment",
             "Scenario",
+            "Session",
             "DeviceName",
+            "ConstellationType",
+            "Svid",
             "sv_id",
             "FreqBand",
+            "CarrierFrequencyHz",
+            "CarrierFrequencyHzRounded",
+            "CodeType",
+            "SignalBand",
+            "signal_id",
+            "SignalEpochCount",
             "SpoofingType",
             "Label",
+            "LabelStatus",
+            "LabelSource",
+            "AgcDbMissing",
+            "SourceFile",
+            "SourceRelativePath",
         ]
         + preprocess.FEATURE_COLS,
     )
@@ -115,6 +132,12 @@ def main() -> None:
     parser.add_argument("--environment", choices=sorted(preprocess.ENVIRONMENTS), default=None, help="Only process one environment.")
     parser.add_argument("--scenario", choices=sorted(preprocess.SCENARIOS), default=None, help="Only process one scenario.")
     parser.add_argument("--overwrite", action="store_true", help="Overwrite existing CSV files.")
+    parser.add_argument(
+        "--offset",
+        type=int,
+        default=0,
+        help="Skip the first N sorted raw logs before applying --limit.",
+    )
     parser.add_argument("--limit", type=int, default=None, help="Process only the first N matched files.")
     parser.add_argument("--suffix", default=".csv", help="Output file suffix. Default: .csv")
     args = parser.parse_args()
@@ -134,6 +157,10 @@ def main() -> None:
         raw_files = [p for p in raw_files if args.environment in p.relative_to(mirror_root).parts]
     if args.scenario:
         raw_files = [p for p in raw_files if args.scenario in p.relative_to(mirror_root).parts]
+    if args.offset < 0:
+        parser.error("--offset must be non-negative")
+    if args.offset:
+        raw_files = raw_files[args.offset:]
     if args.limit is not None:
         raw_files = raw_files[: args.limit]
 

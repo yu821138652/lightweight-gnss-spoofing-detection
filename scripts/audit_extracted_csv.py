@@ -17,11 +17,25 @@ REQUIRED_COLUMNS = [
     "utcTimeMillis",
     "Environment",
     "Scenario",
+    "Session",
     "DeviceName",
+    "ConstellationType",
+    "Svid",
     "sv_id",
     "FreqBand",
+    "CarrierFrequencyHz",
+    "CarrierFrequencyHzRounded",
+    "CodeType",
+    "SignalBand",
+    "signal_id",
+    "SignalEpochCount",
     "SpoofingType",
     "Label",
+    "LabelStatus",
+    "LabelSource",
+    "AgcDbMissing",
+    "SourceFile",
+    "SourceRelativePath",
     "Cn0DbHz",
     "Cn0DbHz_dt",
     "Cn0DbHz_std",
@@ -37,7 +51,11 @@ def ratio(count: int, total: int) -> float:
 
 
 def audit(input_dir: Path) -> dict[str, Any]:
-    files = sorted(input_dir.rglob("*.csv"))
+    files = sorted(
+        path
+        for path in input_dir.rglob("*.csv")
+        if not any("_by_" in part for part in path.parts)
+    )
     rows = 0
     label_counts: Counter[str] = Counter()
     environment_rows: Counter[str] = Counter()
@@ -48,6 +66,13 @@ def audit(input_dir: Path) -> dict[str, Any]:
     scenario_label_counts: Counter[str] = Counter()
     device_label_counts: Counter[str] = Counter()
     device_freq_band_counts: Counter[str] = Counter()
+    label_status_counts: Counter[str] = Counter()
+    label_source_counts: Counter[str] = Counter()
+    label_status_label_counts: Counter[str] = Counter()
+    signal_band_rows: Counter[str] = Counter()
+    unknown_signal_band_rows = 0
+    duplicate_signal_epoch_rows = 0
+    max_signal_epoch_count = 0
     missing_counts: Counter[str] = Counter()
     schema_errors: list[dict[str, Any]] = []
     files_by_environment: Counter[str] = Counter()
@@ -89,6 +114,19 @@ def audit(input_dir: Path) -> dict[str, Any]:
                 device_freq_band_counts[
                     f"{row['DeviceName'].strip()}|{row['FreqBand'].strip()}"
                 ] += 1
+                label_status_counts[row["LabelStatus"].strip()] += 1
+                label_source_counts[row["LabelSource"].strip()] += 1
+                label_status_label_counts[
+                    f"{row['LabelStatus'].strip()}|{row['Label'].strip()}"
+                ] += 1
+                signal_band = row["SignalBand"].strip()
+                signal_band_rows[signal_band] += 1
+                if signal_band.startswith("UNKNOWN"):
+                    unknown_signal_band_rows += 1
+                signal_epoch_count = int(float(row["SignalEpochCount"] or 0))
+                max_signal_epoch_count = max(max_signal_epoch_count, signal_epoch_count)
+                if signal_epoch_count > 1:
+                    duplicate_signal_epoch_rows += 1
                 for column in REQUIRED_COLUMNS:
                     if not row[column].strip():
                         missing_counts[column] += 1
@@ -107,6 +145,14 @@ def audit(input_dir: Path) -> dict[str, Any]:
         "scenario_label_counts": dict(sorted(scenario_label_counts.items())),
         "device_label_counts": dict(sorted(device_label_counts.items())),
         "device_freq_band_counts": dict(sorted(device_freq_band_counts.items())),
+        "label_status_counts": dict(sorted(label_status_counts.items())),
+        "label_source_counts": dict(sorted(label_source_counts.items())),
+        "label_status_label_counts": dict(sorted(label_status_label_counts.items())),
+        "unreviewed_positive_rows": label_status_label_counts["needs_review|1"],
+        "signal_band_rows": dict(sorted(signal_band_rows.items())),
+        "unknown_signal_band_rows": unknown_signal_band_rows,
+        "duplicate_signal_epoch_rows": duplicate_signal_epoch_rows,
+        "max_signal_epoch_count": max_signal_epoch_count,
         "missing_counts": dict(sorted(missing_counts.items())),
         "missing_rates": {
             column: ratio(missing_counts[column], rows)

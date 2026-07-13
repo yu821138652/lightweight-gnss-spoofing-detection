@@ -32,6 +32,17 @@ device_folder_map:
   "Google_Pixel6": "Google_Pixel6"
 
 labeling:
+  # Legacy scenario intervals are only valid for playground recordings.
+  scenario_fallback_environments:
+    - playground
+
+  # Session-specific labels take precedence. Add every reviewed new_building
+  # recording here; an empty interval list means the session was reviewed as
+  # normal. Unlisted new_building sessions are emitted with LabelStatus=
+  # needs_review and must not enter formal training.
+  session_spoofing_tow_intervals:
+    new_building: {}
+
   spoofing_tow_intervals:
     st_L1: [[262228, 262860]]
     st_L5: [[266310, 267054]]
@@ -56,11 +67,25 @@ final_columns:
   - 'utcTimeMillis'
   - 'Environment'
   - 'Scenario'
+  - 'Session'
   - 'DeviceName'
+  - 'ConstellationType'
+  - 'Svid'
   - 'sv_id'
   - 'FreqBand'
+  - 'CarrierFrequencyHz'
+  - 'CarrierFrequencyHzRounded'
+  - 'CodeType'
+  - 'SignalBand'
+  - 'signal_id'
+  - 'SignalEpochCount'
   - 'SpoofingType'
   - 'Label'
+  - 'LabelStatus'
+  - 'LabelSource'
+  - 'AgcDbMissing'
+  - 'SourceFile'
+  - 'SourceRelativePath'
   - 'Cn0DbHz'
   - 'Cn0DbHz_dt'
   - 'Cn0DbHz_std'

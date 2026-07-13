@@ -6,7 +6,7 @@
 
 ```text
 原始 GNSS TXT
-  -> 生成逐日志特征 CSV
+  -> 生成逐日志信号级特征 CSV (SignalBand / signal_id)
   -> 画时序图
   -> 人眼判断欺骗 TOW 区间
   -> 更新标注配置
@@ -15,6 +15,8 @@
   -> 检查张量
   -> 训练/推理
 ```
+
+信号级数据规范、验证结果和常用命令见 `docs/signal_level_feature_extraction.md`。
 
 ## 00_preprocessing_config.yml
 
@@ -44,7 +46,7 @@ configs/preprocessing.yml
 
 来源：`scripts/generate_plot_features.py`
 
-作用：扫描 `data_raw/` 下的原始 GNSS 日志，给每个 TXT 生成一个对应的 `*-plot_features.csv`。
+作用：扫描 `data_raw/` 下的原始 GNSS 日志，给每个 TXT 生成一个对应的 `*-plot_features.csv`，并优先按独立 `SignalID` 绘图。
 
 这些 CSV 是后续画图和人工标注的中间文件。
 
@@ -72,7 +74,7 @@ python pipeline_total/01_generate_plot_feature_csv.py --overwrite
 
 来源：`scripts/batch_plot_features.py`
 
-作用：读取 `*-plot_features.csv`，批量画出各特征的卫星时序图，输出到 `output_plots/`。
+作用：读取 `*-plot_features.csv`，批量画出各特征的信号时序图，输出到 `output_plots/`；旧 CSV 会回退为卫星级绘图。
 
 常用命令：
 
@@ -158,12 +160,12 @@ python pipeline_total/04_build_labeled_processed_csv.py --mode full --config you
 
 来源：`pipeline/02_build_tensors.py`
 
-作用：把 `processed_gnss_data.csv` 构造成训练用 NPZ 张量。
+作用：把 `processed_gnss_data.csv` 构造成训练用 NPZ 张量，默认使用 `signal_id` 作为空间槽位并排除未审查标签。
 
 常用命令：
 
 ```bash
-python pipeline_total/05_build_train_val_test_tensors.py --csv output/processed_gnss_data.csv --output_dir output/tensors_mixed --scenario mixed
+python pipeline_total/05_build_train_val_test_tensors.py --csv output/processed_gnss_data.csv --output_dir output/tensors_mixed --scenario mixed --max-signals 128
 ```
 
 静态/动态分别构建：

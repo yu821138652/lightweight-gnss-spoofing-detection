@@ -2,8 +2,9 @@
 # Unified preprocessing configuration for STAR-Mamba pipeline
 
 paths:
-  input_dir: './data_raw'  # Or 'Addition/ConstellationFormer/data_raw' if using old structure
+  input_dir: './data_raw'
   output_csv: './output/processed_gnss_data.csv'
+  default_environment: 'playground'
 
 file_patterns:
   - "gnss_log_*.txt"
@@ -18,6 +19,13 @@ device_model_map:
   "Pixel 6": "Google_Pixel6"
 
 labeling:
+  # Scenario-level intervals are legacy labels for playground recordings only.
+  scenario_fallback_environments:
+    - playground
+  # Add reviewed new-building intervals at environment/scenario/session level.
+  # Unlisted sessions remain needs_review and are excluded by the tensor builder.
+  session_spoofing_tow_intervals:
+    new_building: {}
   spoofing_tow_intervals:
     # --- 静态数据 (Static) ---
     st_L1: [[262228, 262860]]
@@ -41,11 +49,28 @@ labeling:
 final_columns:
   - 'TimeNanos'
   - 'TOW'
-  - 'sv_id'
+  - 'utcTimeMillis'
+  - 'Environment'
+  - 'Scenario'
+  - 'Session'
   - 'DeviceName'
-  - 'Label'
-  - 'SpoofingType'
+  - 'ConstellationType'
+  - 'Svid'
+  - 'sv_id'
   - 'FreqBand'
+  - 'CarrierFrequencyHz'
+  - 'CarrierFrequencyHzRounded'
+  - 'CodeType'
+  - 'SignalBand'
+  - 'signal_id'
+  - 'SignalEpochCount'
+  - 'SpoofingType'
+  - 'Label'
+  - 'LabelStatus'
+  - 'LabelSource'
+  - 'AgcDbMissing'
+  - 'SourceFile'
+  - 'SourceRelativePath'
   - 'Cn0DbHz'
   - 'Cn0DbHz_dt'
   - 'Cn0DbHz_std'

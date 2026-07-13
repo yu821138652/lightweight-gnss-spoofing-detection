@@ -13,7 +13,7 @@ import hashlib
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - [%(levelname)s] - %(message)s')
 
 # --- 核心超参 ---
-MAX_SATS = 64
+MAX_SIGNALS = 128
 TIME_STEPS = 5
 IGNORE_INDEX = -100  # Masked Label
 WHALE_THRESHOLD = 0  # [Fix] 设为 0，强制所有 Session 都在内部按时间切分 (消除异域问题)
@@ -36,6 +36,16 @@ FEATURE_PRESETS = {
     ],
     'no_uncertainty': ['Cn0DbHz', 'Cn0DbHz_dt', 'Cn0DbHz_std', 'AgcDb'],
 }
+
+
+def resolve_identity_column(df):
+    """Prefer independent signal identity while retaining legacy CSV compatibility."""
+    if 'signal_id' in df.columns:
+        return 'signal_id'
+    if 'sv_id' in df.columns:
+        logging.warning("signal_id is absent; falling back to sv_id for a legacy baseline.")
+        return 'sv_id'
+    raise ValueError("CSV must contain signal_id or sv_id for tensor construction.")
 
 def stable_hash_mod(value, modulo=100):
     digest = hashlib.md5(str(value).encode('utf-8')).hexdigest()
@@ -364,23 +374,34 @@ def perform_global_norm(df, output_dir):
         df_norm[col] = (df_norm[col] - global_mean[col]) / global_std[col]
     return df_norm
 
-def build_tensor_dataset(df, split_name, output_path, device_to_id=None):
+def build_tensor_dataset(df, split_name, output_path, identity_column, device_to_id=None):
     """
     [Core] 生成 Tensor - 纯 Numpy 版 (Fix Speed)
     """
     logging.info(f"--- 3. Building Tensor for {split_name} (Fast Mode) ---")
     
     # 仅保留需要的列，且转为 Numpy 能够快速处理的格式
-    keep_cols = ['session_id', 'TimeNanos', 'sv_id', 'Label'] + FEATURE_COLS
+    keep_cols = ['session_id', 'TimeNanos', identity_column, 'Label'] + FEATURE_COLS
     data_df = df[df['split'] == split_name][keep_cols].copy()
+    if data_df.empty:
+        logging.warning(f"No rows for {split_name}!")
+        return
+
+    # Defensive aggregation avoids a silent last-write-wins overwrite if an
+    # upstream source repeats one identity at one receiver epoch.
+    aggregation = {'Label': 'max', **{column: 'median' for column in FEATURE_COLS}}
+    data_df = (
+        data_df.groupby(['session_id', 'TimeNanos', identity_column], as_index=False, sort=False)
+        .agg(aggregation)
+    )
     
     # 按照 session_id 和 TimeNanos 排序 (关键)
-    data_df = data_df.sort_values(['session_id', 'TimeNanos'])
+    data_df = data_df.sort_values(['session_id', 'TimeNanos', identity_column])
     
     # 提取为 Numpy 数组以加速
     arr_session_ids = data_df['session_id'].values
     arr_times = data_df['TimeNanos'].values
-    arr_sv_ids = data_df['sv_id'].values
+    arr_identities = data_df[identity_column].values
     arr_labels = data_df['Label'].values
     arr_features = data_df[FEATURE_COLS].values
     
@@ -427,7 +448,7 @@ def build_tensor_dataset(df, split_name, output_path, device_to_id=None):
         
         # 当前 Session 的数据切片
         s_times = arr_times[start:end]
-        s_svs = arr_sv_ids[start:end]
+        s_identities = arr_identities[start:end]
         s_labels = arr_labels[start:end]
         s_feats = arr_features[start:end]
         
@@ -457,7 +478,7 @@ def build_tensor_dataset(df, split_name, output_path, device_to_id=None):
             idx_in_session_start = np.searchsorted(s_times, t_start, side='left')
             idx_in_session_end = np.searchsorted(s_times, t_end, side='right')
             
-            w_svs = s_svs[idx_in_session_start:idx_in_session_end]
+            w_identities = s_identities[idx_in_session_start:idx_in_session_end]
             w_times = s_times[idx_in_session_start:idx_in_session_end]
             w_feats = s_feats[idx_in_session_start:idx_in_session_end]
             w_labels = s_labels[idx_in_session_start:idx_in_session_end]
@@ -468,40 +489,42 @@ def build_tensor_dataset(df, split_name, output_path, device_to_id=None):
             mask_in_window = np.isin(w_times, window_ts)
             if not np.any(mask_in_window): continue
             
-            w_svs = w_svs[mask_in_window]
+            w_identities = w_identities[mask_in_window]
             w_times = w_times[mask_in_window]
             w_feats = w_feats[mask_in_window]
             w_labels = w_labels[mask_in_window]
             
             # --- 填充 Tensor ---
-            unique_sv_in_window = np.unique(w_svs)
-            if len(unique_sv_in_window) > MAX_SATS:
-                unique_sv_in_window = unique_sv_in_window[:MAX_SATS]
+            unique_identities = np.unique(w_identities)
+            if len(unique_identities) > MAX_SIGNALS:
+                raise ValueError(
+                    f"Window contains {len(unique_identities)} {identity_column} values, "
+                    f"exceeding max_signals={MAX_SIGNALS}. Increase --max-signals explicitly."
+                )
                 
-            x_tensor = np.zeros((MAX_SATS, TIME_STEPS, len(FEATURE_COLS)), dtype=np.float32)
-            mask_vector = np.zeros((MAX_SATS,), dtype=bool)
-            y_vector = np.full((MAX_SATS,), IGNORE_INDEX, dtype=int)
+            x_tensor = np.zeros((MAX_SIGNALS, TIME_STEPS, len(FEATURE_COLS)), dtype=np.float32)
+            mask_vector = np.zeros((MAX_SIGNALS,), dtype=bool)
+            y_vector = np.full((MAX_SIGNALS,), IGNORE_INDEX, dtype=int)
             
             # Map time to 0..4
             # w_times -> [0, 1, 2, 3, 4]
             # 依然用 searchsorted
             t_indices_map = np.searchsorted(window_ts, w_times)
             
-            for sv_idx, sv_id in enumerate(unique_sv_in_window):
-                # 选出该卫星的行
-                sv_mask = (w_svs == sv_id)
+            for identity_idx, identity in enumerate(unique_identities):
+                identity_mask = (w_identities == identity)
                 
                 # 填 Label (Max)
-                y_vector[sv_idx] = np.max(w_labels[sv_mask])
-                mask_vector[sv_idx] = True
+                y_vector[identity_idx] = np.max(w_labels[identity_mask])
+                mask_vector[identity_idx] = True
                 
                 # 填 Features
                 # t_indices: 该卫星出现的时刻在 0..4 中的位置
-                sv_t_ind = t_indices_map[sv_mask]
-                sv_f_val = w_feats[sv_mask]
+                identity_t_ind = t_indices_map[identity_mask]
+                identity_f_val = w_feats[identity_mask]
                 
                 # Fancy Indexing Assignment
-                x_tensor[sv_idx, sv_t_ind, :] = sv_f_val
+                x_tensor[identity_idx, identity_t_ind, :] = identity_f_val
             
             X_list.append(x_tensor)
             Mask_list.append(mask_vector)
@@ -550,9 +573,16 @@ def main():
                         help='Normalization mode')
     parser.add_argument('--feature_preset', choices=sorted(FEATURE_PRESETS), default='all',
                         help='Feature subset preset for robustness/ablation tensor builds')
+    parser.add_argument('--max-signals', type=int, default=128,
+                        help='Maximum independent signals per window; overflow is an error, never silently truncated.')
+    parser.add_argument('--include-unreviewed', action='store_true',
+                        help='Include rows whose LabelStatus is not reviewed. Disabled by default.')
     args = parser.parse_args()
-    global FEATURE_COLS
+    global FEATURE_COLS, MAX_SIGNALS
     FEATURE_COLS = FEATURE_PRESETS[args.feature_preset]
+    if args.max_signals <= 0:
+        parser.error('--max-signals must be positive')
+    MAX_SIGNALS = args.max_signals
     logging.info(f"Feature preset: {args.feature_preset}; columns={FEATURE_COLS}")
     
     # =============================================
@@ -597,6 +627,14 @@ def main():
     if 'Label' in df.columns:
         df.loc[df['Label'] > 0, 'Label'] = 1
         logging.info("Enforced Binary Labels: All labels > 0 set to 1")
+
+    if 'LabelStatus' in df.columns and not args.include_unreviewed:
+        before = len(df)
+        df = df[df['LabelStatus'].astype(str) == 'reviewed'].copy()
+        logging.info("Excluded %d unreviewed rows before tensor construction", before - len(df))
+
+    identity_column = resolve_identity_column(df)
+    logging.info("Tensor identity column: %s; max signals: %d", identity_column, MAX_SIGNALS)
     
     # =============================================
     # 3. 应用过滤 (实验 D/E 核心功能)
@@ -632,9 +670,9 @@ def main():
     # =============================================
     # 5. 生成 Tensor 数据集
     # =============================================
-    build_tensor_dataset(df_norm, 'train', Path(output_dir) / 'train.npz', device_to_id)
-    build_tensor_dataset(df_norm, 'val', Path(output_dir) / 'val.npz', device_to_id)
-    build_tensor_dataset(df_norm, 'test', Path(output_dir) / 'test.npz', device_to_id)
+    build_tensor_dataset(df_norm, 'train', Path(output_dir) / 'train.npz', identity_column, device_to_id)
+    build_tensor_dataset(df_norm, 'val', Path(output_dir) / 'val.npz', identity_column, device_to_id)
+    build_tensor_dataset(df_norm, 'test', Path(output_dir) / 'test.npz', identity_column, device_to_id)
     
     # =============================================
     # 6. 可选：备份 CSV 到本地

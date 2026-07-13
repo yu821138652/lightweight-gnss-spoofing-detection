@@ -77,21 +77,23 @@ def create_feature_plot(df, feature_col, feature_label, device_name,
     """为单个特征创建时序图"""
     fig, ax = plt.subplots(figsize=(10, 6))
     
-    # 获取所有卫星
-    satellites = sorted(df['SatelliteID'].dropna().unique())
+    identity_column = 'SignalID' if 'SignalID' in df.columns else 'SatelliteID'
+    identities = sorted(df[identity_column].dropna().unique())
     
     # jet colormap
     cmap = plt.cm.jet
-    colors = {sat: cmap(i / max(1, len(satellites) - 1)) 
-             for i, sat in enumerate(satellites)}
-    
-    # 绘制每颗卫星
-    for sat in satellites:
-        sat_data = df[df['SatelliteID'] == sat].sort_values('TOW')
-        if feature_col in sat_data.columns and len(sat_data) > 0:
+    colors = {identity: cmap(i / max(1, len(identities) - 1))
+             for i, identity in enumerate(identities)}
+
+    # Draw each independent signal when available; fall back to satellites for
+    # legacy plot-feature CSV files.
+    for identity in identities:
+        sort_columns = ['TOW'] + (['TimeNanos'] if 'TimeNanos' in df.columns else [])
+        identity_data = df[df[identity_column] == identity].sort_values(sort_columns)
+        if feature_col in identity_data.columns and len(identity_data) > 0:
             plot_with_gap_handling(
-                ax, sat_data['TOW'].values, sat_data[feature_col].values,
-                color=colors[sat], alpha=0.7, linewidth=0.6, label=sat
+                ax, identity_data['TOW'].values, identity_data[feature_col].values,
+                color=colors[identity], alpha=0.7, linewidth=0.6, label=identity
             )
     
     # 标记欺骗区间
@@ -108,7 +110,7 @@ def create_feature_plot(df, feature_col, feature_label, device_name,
     
     # 图例放在图下方
     ax.legend(fontsize=6, ncol=10, loc='upper center', 
-             bbox_to_anchor=(0.5, -0.1), framealpha=0.9, title='SV ID / Event')
+             bbox_to_anchor=(0.5, -0.1), framealpha=0.9, title='Signal ID / Satellite ID')
     
     plt.tight_layout(rect=[0, 0.1, 1, 1])
     

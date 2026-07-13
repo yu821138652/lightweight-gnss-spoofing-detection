@@ -65,9 +65,17 @@ PAPER_DEVICE_MAP = {
 OUTPUT_COLUMNS = [
     'Environment',
     'Scenario',
+    'Session',
     'utcTimeMillis',
+    'TimeNanos',
     'TOW',
     'SatelliteID',  # Will be mapped from sv_id
+    'SignalID',
+    'ConstellationType',
+    'Svid',
+    'CarrierFrequencyHz',
+    'CodeType',
+    'SignalBand',
     'FreqBand',
     'Cn0DbHz',
     'Cn0DbHz_dt',
@@ -77,6 +85,7 @@ OUTPUT_COLUMNS = [
     'PseudorangeRateUncertaintyMetersPerSecond',
     'AccumulatedDeltaRangeUncertaintyMeters',
     'Label',
+    'LabelStatus',
     'DeviceName',
 ]
 
@@ -114,6 +123,7 @@ def process_single_txt(txt_path, config, data_root, overwrite=False):
 
     # 2. 重命名列
     df['SatelliteID'] = df['sv_id']
+    df['SignalID'] = df['signal_id']
 
     # 3. 设备名映射 (使用论文友好名称)
     df['DeviceName'] = df['DeviceName'].map(lambda x: PAPER_DEVICE_MAP.get(x, x))

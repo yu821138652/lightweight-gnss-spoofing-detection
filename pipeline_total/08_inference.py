@@ -15,14 +15,14 @@ from models.st_mamba import STMamba
 from models.transformer import TransformerClassifier
 from models.cnn import CNNClassifier
 
-# Constants from dataset_builder
-MAX_SATS = 64
+# Constants aligned with the signal-level tensor builder.
+DEFAULT_MAX_SIGNALS = 128
 TIME_STEPS = 5
 FEATURE_COLS = [
-    'Cn0DbHz', 'Cn0DbHz_dt', 'Low_Freq_Ratio', 'Spectral_Entropy',
-    'AgcDb', 'ReceivedSvTimeUncertaintyNanos', 
-    'Rate_Consistency', 
-    'El_norm', 'Az_sin', 'Az_cos'
+    'Cn0DbHz', 'Cn0DbHz_dt', 'Cn0DbHz_std',
+    'AgcDb', 'ReceivedSvTimeUncertaintyNanos',
+    'PseudorangeRateUncertaintyMetersPerSecond',
+    'AccumulatedDeltaRangeUncertaintyMeters',
 ]
 
 # Set up logging
@@ -31,7 +31,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - [%(levelname)s] - 
 class GNSSInferenceDataset(Dataset):
     """
     Dataset that returns (Tensor, Valid_Mask, Original_Indices)
-    Original_Indices: [64, 5] matrix of dataframe indices (or -1 if padding)
+    Original_Indices: [max_signals, 5] matrix of dataframe indices (or -1 if padding)
     """
     def __init__(self, tensor_list, mask_list, index_list):
         self.tensors = tensor_list
@@ -46,17 +46,17 @@ class GNSSInferenceDataset(Dataset):
                 torch.from_numpy(self.masks[idx]).bool(),
                 torch.from_numpy(self.indices[idx]).long())
 
-def load_model(model_name, ckpt_path, device, input_dim=10):
+def load_model(model_name, ckpt_path, device, input_dim, num_classes):
     if model_name == 'lstm':
-        model = LSTMClassifier(input_dim=input_dim, hidden_dim=64, num_layers=2, num_classes=4)
+        model = LSTMClassifier(input_dim=input_dim, hidden_dim=64, num_layers=2, num_classes=num_classes)
     elif model_name == 'mamba':
-        model = SpatioTemporalMamba(input_dim=input_dim, d_model=64, n_layer=2, num_classes=4)
+        model = SpatioTemporalMamba(input_dim=input_dim, d_model=64, n_layer=2, num_classes=num_classes)
     elif model_name == 'st_mamba':
-        model = STMamba(input_dim=input_dim, d_model=64, n_layer_time=1, n_layer_space=2, num_classes=4)
+        model = STMamba(input_dim=input_dim, d_model=64, n_layer_time=1, n_layer_space=2, num_classes=num_classes)
     elif model_name == 'transformer':
-        model = TransformerClassifier(input_dim=input_dim, d_model=64, num_layers=2, num_classes=4) # Fixed nhead arg name if needed, usually nhead
+        model = TransformerClassifier(input_dim=input_dim, d_model=64, num_layers=2, num_classes=num_classes)
     elif model_name == 'cnn':
-        model = CNNClassifier(input_dim=input_dim, num_classes=4)
+        model = CNNClassifier(input_dim=input_dim, num_classes=num_classes)
     else:
         raise ValueError(f"Unknown model: {model_name}")
         
@@ -69,26 +69,22 @@ def load_model(model_name, ckpt_path, device, input_dim=10):
 
 def preprocess_features(df):
     logging.info("Feature Engineering...")
-    if 'Rate_Diff' in df.columns and 'Rate_Consistency' not in df.columns:
-        df['Rate_Consistency'] = df['Rate_Diff']
-    
-    if 'Az_sin' not in df.columns:
-        az_rad = np.radians(df['Azimuth'])
-        df['Az_sin'] = np.sin(az_rad)
-        df['Az_cos'] = np.cos(az_rad)
-        df['El_norm'] = df['Elevation'] / 90.0
-
     for col in FEATURE_COLS:
-        if col in df.columns:
-            df[col] = df[col].astype(np.float32)
-
-    fill_dict = {'Rate_Consistency': 0.0, 'Cn0DbHz_dt': 0.0, 'AgcDb': 0.0}
-    for col, val in fill_dict.items():
-        if col in df.columns:
-            df[col] = df[col].fillna(val)
-            
+        if col not in df.columns:
+            logging.warning("Feature %s missing in CSV; filling with 0.0", col)
+            df[col] = 0.0
+        df[col] = pd.to_numeric(df[col], errors='coerce').astype(np.float32)
     df[FEATURE_COLS] = df[FEATURE_COLS].fillna(0.0)
     return df
+
+
+def resolve_identity_column(df):
+    if 'signal_id' in df.columns:
+        return 'signal_id'
+    if 'sv_id' in df.columns:
+        logging.warning("signal_id is absent; using sv_id for legacy inference.")
+        return 'sv_id'
+    raise ValueError("Inference CSV must contain signal_id or sv_id.")
 
 def apply_normalization(df, scaler_path):
     if not Path(scaler_path).exists():
@@ -119,7 +115,7 @@ def apply_normalization(df, scaler_path):
         
     return pd.concat(chunks).loc[df.index] # Maintain original order
 
-def generate_inference_batches(df):
+def generate_inference_batches(df, identity_column, max_signals):
     """
     Generator that yields batches of (Tensor, Mask, Indices)
     Indices maps each tensor element back to df.index
@@ -156,7 +152,7 @@ def generate_inference_batches(df):
         
         # Process each session array-style
         arr_times = times
-        arr_svs = group['sv_id'].values
+        arr_identities = group[identity_column].values
         arr_feats = group[FEATURE_COLS].values
         arr_indices = indices
         
@@ -165,7 +161,7 @@ def generate_inference_batches(df):
             if end - start < TIME_STEPS: continue
             
             s_times = arr_times[start:end]
-            s_svs = arr_svs[start:end]
+            s_identities = arr_identities[start:end]
             s_feats = arr_feats[start:end]
             s_ind = arr_indices[start:end]
             
@@ -181,7 +177,7 @@ def generate_inference_batches(df):
                 idx_start_win = np.searchsorted(s_times, t_start, side='left')
                 idx_end_win = np.searchsorted(s_times, t_end, side='right')
                 
-                w_svs = s_svs[idx_start_win:idx_end_win]
+                w_identities = s_identities[idx_start_win:idx_end_win]
                 w_times = s_times[idx_start_win:idx_end_win]
                 w_feats = s_feats[idx_start_win:idx_end_win]
                 w_ind = s_ind[idx_start_win:idx_end_win]
@@ -190,25 +186,29 @@ def generate_inference_batches(df):
                 mask_in_window = np.isin(w_times, window_ts)
                 if not np.any(mask_in_window): continue
                 
-                w_svs = w_svs[mask_in_window]
+                w_identities = w_identities[mask_in_window]
                 w_times = w_times[mask_in_window]
                 w_feats = w_feats[mask_in_window]
                 w_ind = w_ind[mask_in_window]
                 
-                unique_sv = np.unique(w_svs)
-                if len(unique_sv) > MAX_SATS: unique_sv = unique_sv[:MAX_SATS]
+                unique_identities = np.unique(w_identities)
+                if len(unique_identities) > max_signals:
+                    raise ValueError(
+                        f"Window contains {len(unique_identities)} {identity_column} values, "
+                        f"exceeding max_signals={max_signals}."
+                    )
                 
-                x_tensor = np.zeros((MAX_SATS, TIME_STEPS, len(FEATURE_COLS)), dtype=np.float32)
-                mask_vec = np.zeros((MAX_SATS,), dtype=bool)
-                idx_map = np.full((MAX_SATS, TIME_STEPS), -1, dtype=np.int64) # -1 is invalid index
+                x_tensor = np.zeros((max_signals, TIME_STEPS, len(FEATURE_COLS)), dtype=np.float32)
+                mask_vec = np.zeros((max_signals,), dtype=bool)
+                idx_map = np.full((max_signals, TIME_STEPS), -1, dtype=np.int64)
                 
                 t_indices_map = np.searchsorted(window_ts, w_times)
                 
-                for sv_idx, sv_id in enumerate(unique_sv):
-                    sv_mask = (w_svs == sv_id)
-                    x_tensor[sv_idx, t_indices_map[sv_mask], :] = w_feats[sv_mask]
-                    idx_map[sv_idx, t_indices_map[sv_mask]] = w_ind[sv_mask]
-                    mask_vec[sv_idx] = True
+                for identity_idx, identity in enumerate(unique_identities):
+                    identity_mask = (w_identities == identity)
+                    x_tensor[identity_idx, t_indices_map[identity_mask], :] = w_feats[identity_mask]
+                    idx_map[identity_idx, t_indices_map[identity_mask]] = w_ind[identity_mask]
+                    mask_vec[identity_idx] = True
                     
                 X_buf.append(x_tensor)
                 M_buf.append(mask_vec)
@@ -229,7 +229,13 @@ def main():
     parser.add_argument('--scaler_dir', type=str, default='output/tensor_data')
     parser.add_argument('--output_csv', type=str, default='final_inference_results.csv')
     parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu')
+    parser.add_argument('--max-signals', type=int, default=DEFAULT_MAX_SIGNALS)
+    parser.add_argument('--num-classes', type=int, default=2)
     args = parser.parse_args()
+    if args.max_signals <= 0:
+        parser.error('--max-signals must be positive')
+    if args.num_classes < 2:
+        parser.error('--num-classes must be at least 2')
     
     # 1. Load Data
     logging.info("Loading Raw CSV...")
@@ -242,41 +248,45 @@ def main():
     df_norm = apply_normalization(df_proc, Path(args.scaler_dir) / 'device_scaler.json')
     
     # 3. Load Model
-    model = load_model(args.model, args.ckpt, args.device, input_dim=len(FEATURE_COLS))
+    identity_column = resolve_identity_column(df_norm)
+    model = load_model(
+        args.model, args.ckpt, args.device,
+        input_dim=len(FEATURE_COLS), num_classes=args.num_classes,
+    )
     
     # 4. Inference Loop & Aggregation
     # We need to accumulate probabilities for each row in df
-    # Shape: [N_rows, 4] (probabilities) + [N_rows] (counts)
+    # Shape: [N_rows, num_classes] (probabilities) + [N_rows] (counts)
     
     # Use sparse update or direct numpy array? 
     # DF size might be large. Numpy array [N, 4] is efficient.
-    # N rows, 4 classes
+    # N rows, configurable classes
     N = len(df)
     
     # [Optimization] Use Torch for fast Scatter Max
     # accum_probs = np.zeros((N, 4), dtype=np.float32) -> accum_probs_t
-    accum_probs_t = torch.zeros((N, 4), dtype=torch.float32, device=args.device)
+    accum_probs_t = torch.zeros((N, args.num_classes), dtype=torch.float32, device=args.device)
     counts_t = torch.zeros((N,), dtype=torch.int32, device=args.device)
     
     logging.info("Running Inference with Sliding Windows (Max Aggregation)...")
     
     # Generate batches
-    gen = generate_inference_batches(df_norm)
+    gen = generate_inference_batches(df_norm, identity_column, args.max_signals)
     
     for x_batch, mask_batch, idx_batch in gen:
-        # x_batch: [B, 64, 5, 10]
-        # idx_batch: [B, 64, 5]
+        # x_batch: [B, max_signals, 5, feature_dim]
+        # idx_batch: [B, max_signals, 5]
         
         x_t = torch.from_numpy(x_batch).to(args.device)
         m_t = torch.from_numpy(mask_batch).to(args.device)
         idx_t = torch.from_numpy(idx_batch).to(args.device) # [B, 64, 5]
         
         with torch.no_grad():
-            logits = model(x_t, m_t) # [B, 64, 4]
-            probs = torch.softmax(logits, dim=2) # [B, 64, 4]
+            logits = model(x_t, m_t)
+            probs = torch.softmax(logits, dim=2)
             
         # Broadcast Probs to Time Dim
-        # [B, 64, 1, 4] -> [B, 64, 5, 4]
+        # [B, S, 1, C] -> [B, S, 5, C]
         B, S, T = idx_t.shape
         probs_expanded = probs.unsqueeze(2).expand(-1, -1, T, -1) # [B, 64, 5, 4]
         
@@ -304,7 +314,7 @@ def main():
         # Actually simplest is to loop over classes 0..3 or expand index
         
         # Expand index to [K, 4]
-        indices_expanded = indices_flat.unsqueeze(1).expand(-1, 4) # [K, 4]
+        indices_expanded = indices_flat.unsqueeze(1).expand(-1, args.num_classes)
         
         accum_probs_t.scatter_reduce_(0, indices_expanded, probs_flat, reduce='amax', include_self=True)
         
@@ -326,7 +336,10 @@ def main():
     logging.info("Constructing Output DataFrame...")
     
     # Select columns if they exist
-    out_cols = ['TimeNanos', 'sv_id', 'DeviceName', 'SpoofingType', 'FreqBand', 'Label']
+    out_cols = [
+        'TimeNanos', 'sv_id', 'signal_id', 'SignalBand', 'CodeType',
+        'DeviceName', 'SpoofingType', 'FreqBand', 'Label', 'LabelStatus',
+    ]
     available_cols = [c for c in out_cols if c in df.columns]
     
     res_df = df[available_cols].copy()
@@ -334,10 +347,10 @@ def main():
     
     res_df['pred_label'] = pred_labels
     res_df['confidence'] = np.max(final_probs, axis=1)
-    res_df['prob_spoof_total'] = np.sum(final_probs[:, 1:], axis=1) # Sum L1, L5, Mix
+    res_df['prob_spoof_total'] = np.sum(final_probs[:, 1:], axis=1)
     
     # [New] Map Labels to Strings
-    label_map = {0: 'Normal', 1: 'L1', 2: 'L5', 3: 'Mix'}
+    label_map = {0: 'Normal', 1: 'Spoofing'} if args.num_classes == 2 else {0: 'Normal', 1: 'L1', 2: 'L5', 3: 'Mix'}
     res_df['pred_class'] = res_df['pred_label'].map(label_map)
     if 'groundtruth' in res_df.columns:
          res_df['gt_class'] = res_df['groundtruth'].map(label_map)
@@ -354,6 +367,10 @@ def main():
     logging.info("Performance Statistics (Post-Inference)")
     logging.info("="*60)
     
+    if 'groundtruth' not in res_df.columns:
+        logging.info("No ground-truth labels available; inference results saved without metrics.")
+        return
+
     # Metrics calculation helper
     from sklearn.metrics import classification_report, accuracy_score, f1_score
     
@@ -418,13 +435,17 @@ def main():
     
     # 3. Confusion Matrix
     from sklearn.metrics import confusion_matrix
-    cm = confusion_matrix(y_true, y_pred, labels=[0, 1, 2, 3])
+    class_labels = list(range(args.num_classes))
+    cm = confusion_matrix(y_true, y_pred, labels=class_labels)
     logging.info("Confusion Matrix (Rows=GT, Cols=Pred):")
     logging.info(f"\n{cm}")
-    logging.info("Labels: 0=Normal, 1=L1, 2=L5, 3=Mix")
+    logging.info("Labels: %s", class_labels)
     
     # Normalized CM
-    cm_norm = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis]
+    cm_norm = np.divide(
+        cm.astype(float), cm.sum(axis=1, keepdims=True),
+        out=np.zeros_like(cm, dtype=float), where=cm.sum(axis=1, keepdims=True) != 0,
+    )
     logging.info("Normalized Confusion Matrix:")
     logging.info(f"\n{np.round(cm_norm, 2)}")
 

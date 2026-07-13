@@ -113,8 +113,8 @@ def evaluate(model, dataloader, device, criterion, class_names=None, measure_spe
             y_flat = y.view(-1)                            # [B*64]
             mask_flat = mask.view(-1)                      # [B*64]
             
-            # Expand is_dynamic to satellite level [B] -> [B, 64] -> [B*64]
-            is_dynamic_expanded = is_dynamic.unsqueeze(1).expand(-1, 64).reshape(-1)
+            # Expand per-window metadata to the configured signal-slot count.
+            is_dynamic_expanded = is_dynamic.unsqueeze(1).expand(-1, mask.size(1)).reshape(-1)
             
             # Select valid samples (real satellites)
             valid_logits = logits_flat[mask_flat]

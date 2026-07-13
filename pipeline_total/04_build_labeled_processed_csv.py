@@ -36,7 +36,11 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - [%(levelname)s] - 
 # CONSTANTS
 # =============================================================================
 LIGHT_SPEED = 299792458.0
+SIGNAL_FREQUENCY_RESOLUTION_HZ = 1_000
 CONSTELLATION_MAP = {0: 'Un', 1: 'G', 2: 'S', 3: 'R', 4: 'J', 5: 'C', 6: 'E', 7: 'I'}
+CONSTELLATION_NAME_MAP = {
+    1: 'GPS', 2: 'SBAS', 3: 'GLO', 4: 'QZSS', 5: 'BDS', 6: 'GAL', 7: 'NAVIC'
+}
 ENVIRONMENTS = {'playground', 'new_building'}
 SCENARIOS = {'st_L1', 'st_L5', 'st_L_15', 'dy_L1', 'dy_L5', 'dy_L_15'}
 
@@ -55,6 +59,24 @@ FEATURE_COLS = [
     'PseudorangeRateUncertaintyMetersPerSecond',
     'AccumulatedDeltaRangeUncertaintyMeters',
 ]
+
+# Frequencies are reported with device-specific jitter. The tolerance is wide
+# enough for that jitter but narrow enough to keep adjacent GNSS signals apart.
+SIGNAL_BAND_DEFINITIONS = {
+    1: [('GPS_L1', 1575.42e6, 3e6), ('GPS_L5', 1176.45e6, 3e6)],
+    2: [('SBAS_L1', 1575.42e6, 3e6), ('SBAS_L5', 1176.45e6, 3e6)],
+    3: [('GLO_G1', 1602.0e6, 18e6), ('GLO_G3', 1202.025e6, 3e6)],
+    4: [('QZSS_L1', 1575.42e6, 3e6), ('QZSS_L5', 1176.45e6, 3e6)],
+    5: [
+        ('BDS_B1I', 1561.098e6, 3e6), ('BDS_B1C', 1575.42e6, 3e6),
+        ('BDS_B2a', 1176.45e6, 3e6), ('BDS_B2I', 1207.14e6, 3e6),
+    ],
+    6: [
+        ('GAL_E1', 1575.42e6, 3e6), ('GAL_E5a', 1176.45e6, 3e6),
+        ('GAL_E5b', 1207.14e6, 3e6),
+    ],
+    7: [('NAVIC_L5', 1176.45e6, 3e6), ('NAVIC_S', 2492.028e6, 3e6)],
+}
 
 DEFAULT_DEVICE_FOLDER_MAP = {
     "HUAWEI": "HUAWEI_Mate40",
@@ -152,8 +174,47 @@ def parse_gnss_log(file_path, device_map=None):
 # =============================================================================
 # FEATURE ENGINEERING MODULE
 # =============================================================================
+def classify_signal_band(constellation_type, carrier_frequency_hz):
+    """Return a stable GNSS signal-band name without hiding unknown signals."""
+    if pd.isna(carrier_frequency_hz):
+        return 'UNKNOWN_UNSPECIFIED'
+
+    for name, center_hz, tolerance_hz in SIGNAL_BAND_DEFINITIONS.get(int(constellation_type), []):
+        if abs(float(carrier_frequency_hz) - center_hz) <= tolerance_hz:
+            return name
+
+    return f"UNKNOWN_{float(carrier_frequency_hz) / 1e6:.3f}MHz"
+
+
+def add_signal_identity(df):
+    """Add human-readable, stable identifiers for independently tracked signals."""
+    df['CarrierFrequencyHzRounded'] = (
+        np.rint(df['CarrierFrequencyHz'] / SIGNAL_FREQUENCY_RESOLUTION_HZ)
+        * SIGNAL_FREQUENCY_RESOLUTION_HZ
+    ).astype('Int64')
+    df['CodeType'] = (
+        df['CodeType']
+        .astype('string')
+        .fillna('UNKNOWN')
+        .str.strip()
+        .replace('', 'UNKNOWN')
+    )
+    df['SignalBand'] = [
+        classify_signal_band(constellation, frequency)
+        for constellation, frequency in zip(df['ConstellationType'], df['CarrierFrequencyHz'])
+    ]
+    df['signal_id'] = (
+        df['sv_id'].astype(str)
+        + '|'
+        + df['SignalBand'].astype(str)
+        + '|'
+        + df['CodeType'].astype(str)
+    )
+    return df
+
+
 def calculate_derived_features(df):
-    """Calculate TOW, Pseudorange, FreqBand, sv_id."""
+    """Calculate timing, frequency and independent-signal identifiers."""
     df['rx_time_sec'] = (df['TimeNanos'] + df['TimeOffsetNanos'] - (df['FullBiasNanos'] + df['BiasNanos'])) * 1e-9
     df['tx_time_sec'] = df['ReceivedSvTimeNanos'] * 1e-9
 
@@ -193,7 +254,7 @@ def calculate_derived_features(df):
     df['sv_id'] = df['ConstellationType'].map(CONSTELLATION_MAP).fillna('Un') + df['prn'].astype(int).astype(str).str.zfill(2)
     df.drop(columns='prn', inplace=True, errors='ignore')
 
-    return df
+    return add_signal_identity(df)
 
 
 def filter_bad_data(df):
@@ -210,16 +271,48 @@ def filter_bad_data(df):
     return df
 
 
+def collapse_duplicate_signal_epochs(df):
+    """Collapse repeated observations of one signal at one receiver epoch."""
+    keys = ['signal_id', 'TimeNanos']
+    counts = df.groupby(keys, sort=False).size().rename('SignalEpochCount')
+    if counts.max() <= 1:
+        df['SignalEpochCount'] = 1
+        return df
+
+    median_columns = {
+        'Cn0DbHz', 'AgcDb', 'ReceivedSvTimeUncertaintyNanos',
+        'PseudorangeRateUncertaintyMetersPerSecond',
+        'AccumulatedDeltaRangeUncertaintyMeters',
+    }
+    aggregation = {
+        column: ('median' if column in median_columns else 'first')
+        for column in df.columns
+        if column not in keys
+    }
+    collapsed = df.groupby(keys, as_index=False, sort=False).agg(aggregation)
+    collapsed = collapsed.merge(counts, on=keys, how='left', validate='one_to_one')
+    collapsed['SignalEpochCount'] = collapsed['SignalEpochCount'].astype(np.int16)
+    return collapsed
+
+
 def calculate_advanced_features(df):
     """Calculate the 7 core features for spoofing detection."""
     WINDOW_SIZE = 5
-    df = df.sort_values(by=['sv_id', 'TOW']).copy()
+    if 'signal_id' not in df.columns:
+        raise ValueError('signal_id must be available before calculating C/N0 features')
+
+    df = collapse_duplicate_signal_epochs(df)
+
+    # TOW is not unique within a recording. TimeNanos is the chronological key,
+    # while signal_id prevents cross-frequency and cross-CodeType mixing.
+    df = df.sort_values(by=['signal_id', 'TimeNanos', 'utcTimeMillis'], kind='mergesort').copy()
+    signal_groups = df.groupby('signal_id', sort=False)['Cn0DbHz']
     
     # 1. Cn0DbHz_dt - C/N0 derivative
-    df['Cn0DbHz_dt'] = df.groupby('sv_id')['Cn0DbHz'].diff().fillna(0)
+    df['Cn0DbHz_dt'] = signal_groups.diff().fillna(0)
     
     # 2. Cn0DbHz_std - Rolling standard deviation of C/N0
-    df['Cn0DbHz_std'] = df.groupby('sv_id')['Cn0DbHz'].transform(
+    df['Cn0DbHz_std'] = signal_groups.transform(
         lambda x: x.rolling(window=WINDOW_SIZE, min_periods=2).std()
     ).fillna(0)
     
@@ -239,13 +332,44 @@ def calculate_advanced_features(df):
 # =============================================================================
 # LABELING MODULE
 # =============================================================================
-def add_spoofing_labels(df, spoofing_type, config):
-    """Add spoofing labels based on TOW intervals. Binary classification: 0=authentic, 1=spoofing."""
+def get_label_intervals(metadata, spoofing_type, config):
+    """Resolve session labels first and use legacy scenario labels only when allowed."""
+    labeling_config = config.get('labeling', {})
+    environment = metadata['Environment']
+    scenario = metadata['Scenario']
+    session = metadata['Session']
+
+    session_labels = labeling_config.get('session_spoofing_tow_intervals', {})
+    session_entry = (
+        session_labels
+        .get(environment, {})
+        .get(scenario, {})
+        .get(session)
+    )
+    if session_entry is not None:
+        if isinstance(session_entry, dict):
+            return session_entry.get('intervals', []), session_entry.get('status', 'reviewed'), 'session_config'
+        return session_entry, 'reviewed', 'session_config'
+
+    fallback_environments = set(
+        labeling_config.get('scenario_fallback_environments', ['playground'])
+    )
+    if environment in fallback_environments:
+        intervals = labeling_config.get('spoofing_tow_intervals', {}).get(spoofing_type, [])
+        return intervals, 'reviewed', 'scenario_fallback'
+
+    return [], 'needs_review', 'missing_session_config'
+
+
+def add_spoofing_labels(df, spoofing_type, metadata, config):
+    """Add binary spoofing labels and expose their provenance."""
     labeling_config = config.get('labeling', {})
     label_value = labeling_config.get('spoofing_type_to_label', {}).get(spoofing_type, 0)
-    tow_intervals = labeling_config.get('spoofing_tow_intervals', {}).get(spoofing_type, [])
+    tow_intervals, label_status, label_source = get_label_intervals(metadata, spoofing_type, config)
     
     df['Label'] = 0
+    df['LabelStatus'] = label_status
+    df['LabelSource'] = label_source
     
     if spoofing_type != 'normal' and tow_intervals:
         for start_tow, end_tow in tow_intervals:
@@ -355,8 +479,9 @@ def process_single_file(file_path, spoofing_type, config, data_root=None):
     if df.empty:
         return pd.DataFrame(), device_name
     
+    df['AgcDbMissing'] = df['AgcDb'].isna().astype(np.int8)
     df = calculate_advanced_features(df)
-    df = add_spoofing_labels(df, spoofing_type, config)
+    df = add_spoofing_labels(df, spoofing_type, metadata, config)
     df['DeviceName'] = device_name
     df['SpoofingType'] = spoofing_type
     df['Environment'] = metadata['Environment']
@@ -415,6 +540,7 @@ def run_full_pipeline(config):
         if not df.empty:
             df['SourceFile'] = file_path.name
             df['SourcePath'] = str(file_path)
+            df['SourceRelativePath'] = file_path.relative_to(input_dir).as_posix()
             all_dfs.append(df)
     
     if not all_dfs:
@@ -426,8 +552,10 @@ def run_full_pipeline(config):
     
     # Select final columns
     final_columns = config.get('final_columns', [
-        'TimeNanos', 'TOW', 'utcTimeMillis', 'Environment', 'Scenario',
-        'DeviceName', 'sv_id', 'FreqBand', 'SpoofingType', 'Label'
+        'TimeNanos', 'TOW', 'utcTimeMillis', 'Environment', 'Scenario', 'Session',
+        'DeviceName', 'sv_id', 'FreqBand', 'CarrierFrequencyHz',
+        'CarrierFrequencyHzRounded', 'CodeType', 'signal_id', 'SpoofingType',
+        'Label', 'LabelStatus', 'LabelSource', 'AgcDbMissing'
     ] + FEATURE_COLS)
     
     available_cols = [c for c in final_columns if c in final_df.columns]

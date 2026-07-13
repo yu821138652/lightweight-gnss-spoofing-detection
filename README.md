@@ -84,9 +84,9 @@ lightweight_gnss_spoofing_detection
 ```text
 原始 GNSS txt 日志
   -> 解析 Raw 观测字段
-  -> 计算 TOW / sv_id / FreqBand
+  -> 计算 TOW / sv_id / SignalBand / signal_id
   -> 从目录结构补充 Environment / Scenario / DeviceName / SpoofingType
-  -> 计算 C/N0 差分和滑窗统计特征
+  -> 按独立 signal_id 计算 C/N0 差分和滑窗统计特征
   -> 根据人工确认的 TOW 欺骗区间生成 Label
   -> 输出统一 processed_gnss_data.csv
 ```
@@ -101,11 +101,22 @@ TOW
 utcTimeMillis
 Environment
 Scenario
+Session
 DeviceName
+ConstellationType
+Svid
 sv_id
 FreqBand
+CarrierFrequencyHz
+CodeType
+SignalBand
+signal_id
+SignalEpochCount
 SpoofingType
 Label
+LabelStatus
+LabelSource
+AgcDbMissing
 Cn0DbHz
 Cn0DbHz_dt
 Cn0DbHz_std
@@ -125,7 +136,6 @@ AgcDb
 ReceivedSvTimeUncertaintyNanos
 PseudorangeRateUncertaintyMetersPerSecond
 AccumulatedDeltaRangeUncertaintyMeters
-FreqBand
 ```
 
 其他字段用于排序、分组、标签生成、跨环境/跨设备实验划分和结果分析，不建议直接作为模型输入。
@@ -141,12 +151,16 @@ FreqBand
 | `Scenario` | 路径补充 | 由目录判断，例如 `st_L1`、`dy_L5`、`st_L_15` |
 | `DeviceName` | 日志头解析 + 路径兜底 | 优先从日志设备型号解析，解析失败时使用设备文件夹名 |
 | `sv_id` | 脚本计算 | 由 `ConstellationType` 和 `Svid` 组合生成，例如 `G29`、`E12` |
+| `SignalBand` | 脚本计算 | 由星座和载频标准化得到，例如 `BDS_B1I`、`GPS_L5`、`GAL_E1` |
+| `signal_id` | 脚本计算 | `sv_id + SignalBand + CodeType`，表示独立时序信号，是差分、拆分和张量槽位主键 |
+| `SignalEpochCount` | 脚本计算 | 同一 `signal_id + TimeNanos` 的原始观测数；大于 1 时预处理会先聚合，避免静默覆盖 |
 | `FreqBand` | 脚本计算 | 由 `CarrierFrequencyHz` 判断 L1/L5 |
 | `SpoofingType` | 路径/规则生成 | 第一版可直接设为 `Scenario` |
 | `Label` | 标签配置生成 | 根据人工确认的欺骗 TOW 区间生成，正常为 0，欺骗为 1 |
+| `LabelStatus` / `LabelSource` | 脚本配置生成 | 标识标签是否已审查及其来源；默认训练只使用 `reviewed` 行 |
 | `Cn0DbHz` | 原始 txt 中 Raw 行自带 | 载噪比 C/N0，反映卫星信号质量 |
-| `Cn0DbHz_dt` | 脚本计算 | 同一颗卫星相邻时刻 C/N0 的差分，用于捕捉突变 |
-| `Cn0DbHz_std` | 脚本计算 | 同一颗卫星滑动窗口内 C/N0 标准差，用于描述短时波动 |
+| `Cn0DbHz_dt` | 脚本计算 | 同一 `signal_id` 相邻时刻 C/N0 的差分，用于捕捉突变 |
+| `Cn0DbHz_std` | 脚本计算 | 同一 `signal_id` 滑动窗口内 C/N0 标准差，用于描述短时波动 |
 | `AgcDb` | 原始 txt 中 Raw 行通常自带 | 自动增益控制值，反映接收机前端对输入信号强弱的调节 |
 | `ReceivedSvTimeUncertaintyNanos` | 原始 txt 中 Raw 行自带 | 卫星发射时间估计不确定度，单位 ns |
 | `PseudorangeRateUncertaintyMetersPerSecond` | 原始 txt 中 Raw 行自带 | 伪距率不确定度，单位 m/s |
@@ -190,6 +204,8 @@ st_L_15 / dy_L_15：L1 和 L5 均可打欺骗标签
 ```
 
 标签区间必须经过可视化复核，不能只依赖旧配置或历史 CSV。
+
+新主楼的 Session 尚未录入经人工确认的区间时会标记为 `needs_review`，默认不进入张量构建和正式训练。信号级数据模型、重建与拆分命令见 [docs/signal_level_feature_extraction.md](docs/signal_level_feature_extraction.md)。
 
 ### 缺失值注意事项
 
