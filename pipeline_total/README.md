@@ -18,7 +18,8 @@
 
 ## 00_preprocessing_config.yml
 
-来源：`configs/preprocessing.yml`
+来源：`configs/preprocessing_template.yml`。完成新主楼标签配置后，复制为
+`configs/preprocessing.yml` 供正式预处理使用。
 
 这是预处理和打标签的主配置。重点维护：
 
@@ -65,7 +66,7 @@ python pipeline_total/01_generate_plot_feature_csv.py --scenario st_L1
 python pipeline_total/01_generate_plot_feature_csv.py --overwrite
 ```
 
-注意：这个脚本目前默认处理 `data_raw/`。如果要处理 `data_raw2/`，可以临时改脚本里的 `DATA_RAW_DIR`，或后续扩展参数。
+注意：当前主数据统一位于仓库根目录 `data_raw/`。
 
 ## 02_batch_plot_feature_images.py
 
@@ -98,7 +99,8 @@ for scenario in ["st_L1", "st_L5", "st_L_15", "dy_L1", "dy_L5", "dy_L_15"]:
 python -m labeling.run_labeling --spoof_type dy_L1 --folder 2022.07.08semicircle
 ```
 
-注意：原脚本目前指向旧路径 `Addition/ConstellationFormer/data_raw`。如果继续使用，需要把里面的 `config.ROOT_DATA_DIR` 改到当前数据根目录，或者直接用前两步生成的 PNG 进行人工标注。
+注意：原脚本仍带有旧路径配置。继续使用前，需将 `config.ROOT_DATA_DIR`
+改为仓库根目录的 `data_raw/`，或者直接用前两步生成的 PNG 进行人工标注。
 
 ## 人工步骤：更新欺骗区间
 
@@ -138,12 +140,12 @@ python pipeline_total/04_build_labeled_processed_csv.py --mode full --config con
 output/processed_gnss_data.csv
 ```
 
-如果要处理 `data_raw2/`，可以复制一份配置并改：
+若需要自定义输出位置，可以复制配置并修改：
 
 ```yaml
 paths:
-  input_dir: './data_raw2'
-  output_csv: './output/processed_gnss_data_raw2.csv'
+  input_dir: './data_raw'
+  output_csv: './output/processed_gnss_data.csv'
 ```
 
 然后运行：

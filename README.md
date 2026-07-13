@@ -21,6 +21,8 @@
 
 ```text
 configs/          配置模板
+data_raw/         本地原始 GNSS TXT（Git 忽略）
+data_csv/         逐日志提取 CSV（Git 忽略）
 pipeline_total/   数据处理、画图、标注、训练、推理全流程脚本
 docs/             项目主线、数据清单、实验计划
 README.md         项目说明
@@ -35,13 +37,13 @@ CONTRIBUTING.md   组内 GitHub 协作说明
 主数据已统一放在本地：
 
 ```text
-H:\GNSS\real_world_spoofing_dataset_pipeline
+H:\GNSS\lightweight_gnss_spoofing_detection
 ```
 
 推荐目录结构：
 
 ```text
-real_world_spoofing_dataset_pipeline
+lightweight_gnss_spoofing_detection
 ├─ data_raw
 │  ├─ playground
 │  │  ├─ st_L1
@@ -66,8 +68,8 @@ real_world_spoofing_dataset_pipeline
 
 | 数据角色 | 本地路径 | 用途 |
 |---|---|---|
-| 主数据 | `H:\GNSS\real_world_spoofing_dataset_pipeline\data_raw\playground` | 操场导航欺骗数据，作为真实环境之一 |
-| 主数据 | `H:\GNSS\real_world_spoofing_dataset_pipeline\data_raw\new_building` | 新主楼导航欺骗数据，用于跨环境验证 |
+| 主数据 | `H:\GNSS\lightweight_gnss_spoofing_detection\data_raw\playground` | 操场导航欺骗数据，作为真实环境之一 |
+| 主数据 | `H:\GNSS\lightweight_gnss_spoofing_detection\data_raw\new_building` | 新主楼导航欺骗数据，用于跨环境验证 |
 | 辅助数据 | `H:\GNSS\Finland L1_E1 data\final_mat` | 富特征软件接收机数据，可用于强基线、Teacher 或对照分析 |
 | 暂不纳入主线 | `H:\GNSS\Interference Data` | 标签可信度暂不确定，暂不进入主实验 |
 
@@ -237,7 +239,7 @@ python scripts/build_data_manifest.py
 默认会扫描：
 
 ```text
-H:\GNSS\real_world_spoofing_dataset_pipeline\data_raw
+H:\GNSS\lightweight_gnss_spoofing_detection\data_raw
 ```
 
 并输出：
@@ -298,7 +300,7 @@ Google_Pixel_Watch1 的 AgcDb 全缺失，后续需要保留缺失标记并做 n
 
 ## 推荐流程
 
-1. 检查 `real_world_spoofing_dataset_pipeline` 的目录结构是否规范。
+1. 检查仓库根目录下 `data_raw/` 与 `data_csv/` 的目录结构是否规范。
 2. 建立或更新 `data_manifest.csv`，记录每个日志的环境、场景、设备、文件名和标注状态。
 3. 使用 pipeline 生成每个日志对应的 `*-plot_features.csv`。
 4. 可视化 `Cn0DbHz`、`AgcDb`、uncertainty 等特征。
@@ -331,7 +333,7 @@ TTD 检测时间评估
 
 近期请优先完成：
 
-1. 整理 `real_world_spoofing_dataset_pipeline` 的 `playground/new_building` 数据结构。
+1. 整理仓库内 `data_raw/playground` 与 `data_raw/new_building` 的数据结构。
 2. 生成 `data_manifest.csv`。
 3. 生成两套数据的 `*-plot_features.csv`。
 4. 看图复核 TOW 标签。

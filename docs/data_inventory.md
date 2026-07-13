@@ -1,20 +1,21 @@
 ﻿# Data Inventory
 
-This project uses large local datasets stored outside this repository.
+This project keeps large local datasets under the repository root. They are
+excluded from GitHub through `.gitignore`.
 
 ## 1. Playground Spoofing Data
 
 Path:
 
 ```text
-H:\GNSS\data_raw
+H:\GNSS\lightweight_gnss_spoofing_detection\data_raw\playground
 ```
 
 Summary:
 
 - scenarios: `st_L1`, `st_L5`, `st_L_15`, `dy_L1`, `dy_L5`, `dy_L_15`
 - raw TXT files: 98
-- processed/intermediate CSV files already present: 768
+- extracted per-log CSV files are stored under `data_csv/playground`
 - devices include HUAWEI, Xiaomi MI8, Redmi/K60-class Xiaomi, Pixel/Google, watch1, watch2, and u-blox-related files
 
 Role:
@@ -27,14 +28,14 @@ Role:
 Path:
 
 ```text
-H:\GNSS\导航欺骗新主楼数据集及全流程处理脚本\导航欺骗新主楼数据集及全流程处理脚本\0729
+H:\GNSS\lightweight_gnss_spoofing_detection\data_raw\new_building
 ```
 
 Summary:
 
 - scenarios: `st_L1`, `st_L5`, `st_L_15`, `dy_L1`, `dy_L5`, `dy_L_15`
 - raw TXT files: 35
-- CSV files: 45
+- extracted per-log CSV files are stored under `data_csv/new_building`
 - devices include HUAWEI Mate40, XiaoMi MI8, RedMi K60, Google Pixel Watch 1, and Google Pixel Watch 2
 
 Role:

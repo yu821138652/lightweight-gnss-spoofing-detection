@@ -54,13 +54,14 @@ MAT 文件
 
 大数据不放进 GitHub，统一放在本地或网盘中。
 
-当前主数据建议结构：
+当前主数据位于仓库根目录，但已被 `.gitignore` 排除，建议结构：
 
 ```text
-real_world_spoofing_dataset_pipeline
+lightweight_gnss_spoofing_detection
 ├─ data_raw
 │  ├─ playground
 │  └─ new_building
+├─ data_csv
 ├─ pipeline_total
 ├─ configs
 └─ output

@@ -39,7 +39,7 @@
 路径：
 
 ```text
-H:\GNSS\data_raw
+H:\GNSS\lightweight_gnss_spoofing_detection\data_raw\playground
 ```
 
 这是之前已有的操场数据，包含：
@@ -66,7 +66,7 @@ dy_L_15
 路径：
 
 ```text
-H:\GNSS\导航欺骗新主楼数据集及全流程处理脚本\导航欺骗新主楼数据集及全流程处理脚本\0729
+H:\GNSS\lightweight_gnss_spoofing_detection\data_raw\new_building
 ```
 
 主要价值：
