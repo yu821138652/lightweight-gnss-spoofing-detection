@@ -1,0 +1,70 @@
+# Unified preprocessing configuration for this local workspace.
+
+paths:
+  input_dir: './data_raw'
+  output_csv: './output/processed_gnss_data.csv'
+  default_environment: 'playground'
+
+file_patterns:
+  - "gnss_log_*.txt"
+  - "log_mimir_*.txt"
+
+device_model_map:
+  "NOH-AN01": "HUAWEI_Mate40"
+  "Google Pixel Watch 2": "Google_Pixel_Watch2"
+  "Google Pixel Watch": "Google_Pixel_Watch1"
+  "23078RKD5C": "RedMi_K60"
+  "MI 8": "XiaoMi_MI8"
+  "Pixel 6": "Google_Pixel6"
+
+device_folder_map:
+  "HUAWEI": "HUAWEI_Mate40"
+  "HUAWEI_Mate40": "HUAWEI_Mate40"
+  "Xiaomi_MI_8": "XiaoMi_MI8"
+  "XiaoMi_MI8": "XiaoMi_MI8"
+  "Xiaomi_23078RKD5C": "RedMi_K60"
+  "RedMi_K60": "RedMi_K60"
+  "watch1": "Google_Pixel_Watch1"
+  "watch2": "Google_Pixel_Watch2"
+  "Google_Pixel_Watch1": "Google_Pixel_Watch1"
+  "Google_Pixel_Watch2": "Google_Pixel_Watch2"
+  "谷歌pix6": "Google_Pixel6"
+  "Google_Pixel6": "Google_Pixel6"
+
+labeling:
+  spoofing_tow_intervals:
+    st_L1: [[262228, 262860]]
+    st_L5: [[266310, 267054]]
+    st_L_15: [[258028, 258653]]
+    normal: []
+    dy_L1: [[263995, 264050], [264690, 264740], [265015, 265065], [481730, 481940], [482350, 482420], [482650, 482750]]
+    dy_L5: [[269190, 269220], [268960, 268990], [269434, 269470], [483200, 483320]]
+    dy_L_15: [[261285, 261310], [260025, 260050], [260970, 261040]]
+
+  spoofing_type_to_label:
+    normal: 0
+    st_L1: 1
+    st_L5: 2
+    st_L_15: 3
+    dy_L1: 1
+    dy_L5: 2
+    dy_L_15: 3
+
+final_columns:
+  - 'TimeNanos'
+  - 'TOW'
+  - 'utcTimeMillis'
+  - 'Environment'
+  - 'Scenario'
+  - 'DeviceName'
+  - 'sv_id'
+  - 'FreqBand'
+  - 'SpoofingType'
+  - 'Label'
+  - 'Cn0DbHz'
+  - 'Cn0DbHz_dt'
+  - 'Cn0DbHz_std'
+  - 'AgcDb'
+  - 'ReceivedSvTimeUncertaintyNanos'
+  - 'PseudorangeRateUncertaintyMetersPerSecond'
+  - 'AccumulatedDeltaRangeUncertaintyMeters'
