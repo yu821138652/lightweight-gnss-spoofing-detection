@@ -256,6 +256,46 @@ new_building: 35
 
 `label_status` 初始均为 `unreviewed`，后续人工看图确认标签后再更新。
 
+## CSV 训练准入审计
+
+在构建训练窗口或训练模型前，必须先审计逐日志 CSV。审计只读取
+`data_csv/`，不会修改原始 CSV：
+
+```bash
+python scripts/audit_extracted_csv.py \
+  --input-dir data_csv \
+  --output-json output/data_csv_audit.json
+```
+
+审计报告包含：
+
+```text
+CSV 文件数和观测总行数
+字段完整性
+Label、Environment、Scenario、DeviceName、FreqBand 分布
+设备 x 标签、设备 x 频段覆盖
+核心特征缺失率
+```
+
+随后生成 session 级清单。每个逐日志 CSV 是后续训练/验证/测试切分的
+最小单位，不允许把同一录制的相邻数据切到不同集合：
+
+```bash
+python scripts/build_csv_session_manifest.py \
+  --input-dir data_csv \
+  --output-csv docs/data_csv_session_manifest.csv
+```
+
+当前 CSV 审计结论：
+
+```text
+new_building 的 35 个 session 暂无欺骗正样本，不能参与正式跨环境检测率评估
+Google_Pixel_Watch1 的 AgcDb 全缺失，后续需要保留缺失标记并做 no-AGC 消融
+现有 Cn0DbHz_dt / Cn0DbHz_std 仍按 sv_id 计算，需先改为按独立 signal_id 重建
+```
+
+在完成新主楼标签补充和 signal_id 特征重建前，不得开始正式模型训练。
+
 ## 推荐流程
 
 1. 检查 `real_world_spoofing_dataset_pipeline` 的目录结构是否规范。
