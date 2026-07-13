@@ -16,6 +16,7 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 from tqdm import tqdm
 import yaml
+import argparse
 
 plt.rcParams.update({
     'font.family': 'Times New Roman',
@@ -170,6 +171,12 @@ def process_scenario(scenario: str, input_base: str = 'data_raw',
 
 
 def main():
+    parser = argparse.ArgumentParser(description='Batch plot GNSS feature time-series images.')
+    parser.add_argument('--input-base', default='data_raw', help='Directory containing scenario folders.')
+    parser.add_argument('--output-base', default='output_plots', help='Directory for generated PNG files.')
+    parser.add_argument('--scenario', default=None, help='Only plot one scenario, e.g. st_L1.')
+    args = parser.parse_args()
+
     print("=" * 60)
     print("Batch Feature Time-Series Plotting")
     print("=" * 60)
@@ -177,9 +184,12 @@ def main():
     print(f"Max gap (断线阈值): {MAX_GAP_SECONDS}s")
     print(f"Colormap: jet")
     
-    # 处理 st_L1 和 dy_L1
-    process_scenario('st_L1')
-    process_scenario('dy_L1')
+    scenarios = ['st_L1', 'st_L5', 'st_L_15', 'dy_L1', 'dy_L5', 'dy_L_15']
+    if args.scenario:
+        scenarios = [args.scenario]
+
+    for scenario in scenarios:
+        process_scenario(scenario, input_base=args.input_base, output_base=args.output_base)
     
     print("\n" + "=" * 60)
     print("✅ All plots generated!")
