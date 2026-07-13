@@ -37,8 +37,6 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - [%(levelname)s] - 
 # =============================================================================
 LIGHT_SPEED = 299792458.0
 CONSTELLATION_MAP = {0: 'Un', 1: 'G', 2: 'S', 3: 'R', 4: 'J', 5: 'C', 6: 'E', 7: 'I'}
-ENVIRONMENTS = {'playground', 'new_building'}
-SCENARIOS = {'st_L1', 'st_L5', 'st_L_15', 'dy_L1', 'dy_L5', 'dy_L_15'}
 
 DEFAULT_DEVICE_MAP = {
     "NOH-AN01": "HUAWEI_Mate40",
@@ -55,21 +53,6 @@ FEATURE_COLS = [
     'PseudorangeRateUncertaintyMetersPerSecond',
     'AccumulatedDeltaRangeUncertaintyMeters',
 ]
-
-DEFAULT_DEVICE_FOLDER_MAP = {
-    "HUAWEI": "HUAWEI_Mate40",
-    "HUAWEI_Mate40": "HUAWEI_Mate40",
-    "Xiaomi_MI_8": "XiaoMi_MI8",
-    "XiaoMi_MI8": "XiaoMi_MI8",
-    "Xiaomi_23078RKD5C": "RedMi_K60",
-    "RedMi_K60": "RedMi_K60",
-    "watch1": "Google_Pixel_Watch1",
-    "watch2": "Google_Pixel_Watch2",
-    "Google_Pixel_Watch1": "Google_Pixel_Watch1",
-    "Google_Pixel_Watch2": "Google_Pixel_Watch2",
-    "谷歌pix6": "Google_Pixel6",
-    "Google_Pixel6": "Google_Pixel6",
-}
 
 # =============================================================================
 # PARSER MODULE
@@ -274,77 +257,12 @@ def get_spoofing_type_from_path(file_path, known_types):
     return "normal"
 
 
-def infer_path_metadata(file_path, data_root=None, config=None):
-    """Infer environment, scenario, session, and device folder from a raw log path."""
-    file_path = Path(file_path).resolve()
-    default_environment = "playground"
-    if config:
-        default_environment = config.get('paths', {}).get('default_environment', default_environment)
-
-    if data_root is not None:
-        root_path = Path(data_root).resolve()
-        if root_path.name in ENVIRONMENTS:
-            default_environment = root_path.name
-        try:
-            parts = file_path.relative_to(root_path).parts
-        except ValueError:
-            parts = file_path.parts
-    else:
-        parts = file_path.parts
-
-    environment = default_environment
-    scenario = "unknown"
-    session = "unknown"
-    device_folder = file_path.parent.name
-
-    if len(parts) > 1 and parts[0] in ENVIRONMENTS:
-        environment = parts[0]
-        scenario = parts[1]
-        offset = 2
-    elif len(parts) > 0 and parts[0] in SCENARIOS:
-        scenario = parts[0]
-        offset = 1
-    else:
-        offset = 0
-        for i, part in enumerate(parts):
-            if part in SCENARIOS:
-                scenario = part
-                offset = i + 1
-                if i > 0 and parts[i - 1] in ENVIRONMENTS:
-                    environment = parts[i - 1]
-                break
-
-    if len(parts) > offset:
-        session = parts[offset]
-    if len(parts) > offset + 1:
-        device_folder = parts[offset + 1]
-
-    return {
-        'Environment': environment,
-        'Scenario': scenario,
-        'Session': session,
-        'DeviceFolder': device_folder,
-    }
-
-
-def normalize_device_name(device_name, device_folder, config):
-    """Use log header first, then path folder as a deterministic fallback."""
-    if device_name:
-        return device_name
-
-    folder_map = DEFAULT_DEVICE_FOLDER_MAP.copy()
-    folder_map.update(config.get('device_folder_map', {}))
-    return folder_map.get(device_folder, device_folder)
-
-
 # =============================================================================
 # MAIN PIPELINE
 # =============================================================================
-def process_single_file(file_path, spoofing_type, config, data_root=None):
+def process_single_file(file_path, spoofing_type, config):
     """Full processing pipeline for a single TXT file."""
     df, device_name = parse_gnss_log(file_path, config.get('device_model_map', DEFAULT_DEVICE_MAP))
-    metadata = infer_path_metadata(file_path, data_root=data_root, config=config)
-    device_name = normalize_device_name(device_name, metadata['DeviceFolder'], config)
     
     if df.empty:
         return pd.DataFrame(), device_name
@@ -359,29 +277,8 @@ def process_single_file(file_path, spoofing_type, config, data_root=None):
     df = add_spoofing_labels(df, spoofing_type, config)
     df['DeviceName'] = device_name
     df['SpoofingType'] = spoofing_type
-    df['Environment'] = metadata['Environment']
-    df['Scenario'] = metadata['Scenario']
-    df['Session'] = metadata['Session']
     
     return df, device_name
-
-
-def write_missing_report(final_df, output_path):
-    """Write a compact missing-rate report for the core deployment features."""
-    report_cols = [c for c in FEATURE_COLS if c in final_df.columns]
-    group_cols = [c for c in ['Environment', 'Scenario', 'DeviceName'] if c in final_df.columns]
-    if not report_cols:
-        return
-
-    if group_cols:
-        missing_df = final_df.groupby(group_cols)[report_cols].apply(lambda x: x.isna().mean())
-        missing_df = missing_df.reset_index()
-    else:
-        missing_df = final_df[report_cols].isna().mean().to_frame().T
-
-    missing_path = output_path.with_name(output_path.stem + "_missing_report.csv")
-    missing_df.to_csv(missing_path, index=False)
-    logging.info(f"Missing-rate report saved to: {missing_path}")
 
 
 def run_full_pipeline(config):
@@ -410,11 +307,10 @@ def run_full_pipeline(config):
     all_dfs = []
     for file_path in tqdm(all_files, desc="Processing files"):
         spoofing_type = get_spoofing_type_from_path(file_path, known_types)
-        df, device_name = process_single_file(file_path, spoofing_type, config, data_root=input_dir)
+        df, device_name = process_single_file(file_path, spoofing_type, config)
         
         if not df.empty:
             df['SourceFile'] = file_path.name
-            df['SourcePath'] = str(file_path)
             all_dfs.append(df)
     
     if not all_dfs:
@@ -426,8 +322,7 @@ def run_full_pipeline(config):
     
     # Select final columns
     final_columns = config.get('final_columns', [
-        'TimeNanos', 'TOW', 'utcTimeMillis', 'Environment', 'Scenario',
-        'DeviceName', 'sv_id', 'FreqBand', 'SpoofingType', 'Label'
+        'TimeNanos', 'TOW', 'sv_id', 'DeviceName', 'Label', 'SpoofingType', 'FreqBand'
     ] + FEATURE_COLS)
     
     available_cols = [c for c in final_columns if c in final_df.columns]
@@ -436,7 +331,6 @@ def run_full_pipeline(config):
     # Save CSV
     output_path.parent.mkdir(parents=True, exist_ok=True)
     final_df.to_csv(output_path, index=False)
-    write_missing_report(final_df, output_path)
     
     logging.info(f"✅ CSV saved to: {output_path}")
     logging.info(f"   Rows: {len(final_df):,}")

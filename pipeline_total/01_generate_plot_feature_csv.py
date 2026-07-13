@@ -30,16 +30,21 @@ from tqdm import tqdm
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-# Import from the self-contained preprocessing module.
+# Import from pipeline module (01_preprocess.py)
+# Python doesn't allow module names starting with numbers, so we use importlib
 import importlib.util
-spec = importlib.util.spec_from_file_location(
-    "preprocess", project_root / "pipeline_total" / "04_build_labeled_processed_csv.py"
-)
+spec = importlib.util.spec_from_file_location("preprocess", project_root / "pipeline" / "01_preprocess.py")
 preprocess = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(preprocess)
 
-process_single_file = preprocess.process_single_file
+parse_gnss_log = preprocess.parse_gnss_log
+calculate_derived_features = preprocess.calculate_derived_features
+filter_bad_data = preprocess.filter_bad_data
+calculate_advanced_features = preprocess.calculate_advanced_features
+add_spoofing_labels = preprocess.add_spoofing_labels
 get_spoofing_type_from_path = preprocess.get_spoofing_type_from_path
+DEFAULT_DEVICE_MAP = preprocess.DEFAULT_DEVICE_MAP
+FEATURE_COLS = preprocess.FEATURE_COLS
 
 import yaml
 
@@ -63,9 +68,6 @@ PAPER_DEVICE_MAP = {
 
 # 输出列
 OUTPUT_COLUMNS = [
-    'Environment',
-    'Scenario',
-    'utcTimeMillis',
     'TOW',
     'SatelliteID',  # Will be mapped from sv_id
     'FreqBand',
@@ -81,14 +83,7 @@ OUTPUT_COLUMNS = [
 ]
 
 
-def resolve_config_path(path_value):
-    path = Path(path_value)
-    if not path.is_absolute():
-        path = project_root / path
-    return path
-
-
-def process_single_txt(txt_path, config, data_root, overwrite=False):
+def process_single_txt(txt_path, config, overwrite=False):
     """
     处理单个 TXT 文件，生成对应的 -plot_features.csv
     
@@ -103,26 +98,43 @@ def process_single_txt(txt_path, config, data_root, overwrite=False):
         logging.debug(f"Skipping (exists): {output_path.name}")
         return True, 0, output_path
     
-    # 1. 解析、过滤、计算特征并按当前配置打临时标签
+    # 1. 解析 TXT
+    df, device_name = parse_gnss_log(txt_path, DEFAULT_DEVICE_MAP)
+    
+    if df.empty:
+        logging.warning(f"Empty file: {txt_path.name}")
+        return False, 0, None
+    
+    # 2. 计算派生特征
+    df = calculate_derived_features(df)
+    
+    # 3. 过滤低质量数据
+    df = filter_bad_data(df)
+    
+    if df.empty:
+        logging.warning(f"No valid data after filtering: {txt_path.name}")
+        return False, 0, None
+    
+    # 4. 计算高级特征
+    df = calculate_advanced_features(df)
+    
+    # 5. 添加欺骗标签
     known_types = list(config.get('labeling', {}).get('spoofing_type_to_label', {}).keys())
     spoofing_type = get_spoofing_type_from_path(txt_path, known_types)
-    df, _ = process_single_file(txt_path, spoofing_type, config, data_root=data_root)
-
-    if df.empty:
-        logging.warning(f"No valid data after parsing/filtering: {txt_path.name}")
-        return False, 0, None
-
-    # 2. 重命名列
-    df['SatelliteID'] = df['sv_id']
-
-    # 3. 设备名映射 (使用论文友好名称)
-    df['DeviceName'] = df['DeviceName'].map(lambda x: PAPER_DEVICE_MAP.get(x, x))
+    df = add_spoofing_labels(df, spoofing_type, config)
     
-    # 4. 选择输出列
+    # 6. 重命名列
+    df['SatelliteID'] = df['sv_id']
+    
+    # 7. 设备名映射 (使用论文友好名称)
+    paper_device_name = PAPER_DEVICE_MAP.get(device_name, device_name)
+    df['DeviceName'] = paper_device_name
+    
+    # 8. 选择输出列
     output_cols = [c for c in OUTPUT_COLUMNS if c in df.columns]
     output_df = df[output_cols].copy()
     
-    # 5. 保存 CSV
+    # 9. 保存 CSV
     output_df.to_csv(output_path, index=False)
     
     return True, len(output_df), output_path
@@ -136,10 +148,6 @@ def main():
                         help='Overwrite existing CSV files')
     parser.add_argument('--config', type=str, default=str(CONFIG_FILE),
                         help='Path to preprocessing config')
-    parser.add_argument('--data-root', type=str, default=None,
-                        help='Override data root path. Defaults to paths.input_dir in config')
-    parser.add_argument('--limit', type=int, default=None,
-                        help='Process only first N files, useful for smoke tests')
     args = parser.parse_args()
     
     # 加载配置
@@ -156,27 +164,25 @@ def main():
     logging.info("Generate Plot Features CSV")
     logging.info("=" * 60)
     
-    data_root = resolve_config_path(args.data_root or config.get('paths', {}).get('input_dir', DATA_RAW_DIR))
-    logging.info(f"Data root: {data_root}")
-
-    file_patterns = config.get('file_patterns', ["gnss_log_*.txt", "log_mimir_*.txt"])
     all_txt_files = []
-    seen = set()
-    for pattern in file_patterns:
-        for txt_path in data_root.rglob(pattern):
-            if txt_path in seen:
-                continue
-            if args.scenario and args.scenario not in txt_path.parts:
-                continue
-            seen.add(txt_path)
-            all_txt_files.append(txt_path)
-
-    all_txt_files = sorted(all_txt_files, key=lambda p: str(p).lower())
-    if args.limit is not None:
-        all_txt_files = all_txt_files[:args.limit]
-
+    scenarios = ['st_L1', 'st_L5', 'st_L_15', 'dy_L1', 'dy_L5', 'dy_L_15']
+    
     if args.scenario:
-        logging.info(f"Scenario filter: {args.scenario}")
+        if args.scenario not in scenarios:
+            logging.error(f"Unknown scenario: {args.scenario}")
+            return
+        scenarios = [args.scenario]
+    
+    for scenario in scenarios:
+        scenario_dir = DATA_RAW_DIR / scenario
+        if not scenario_dir.exists():
+            logging.warning(f"Scenario dir not found: {scenario_dir}")
+            continue
+        
+        # 查找 TXT 文件
+        txt_files = list(scenario_dir.rglob("gnss_log_*.txt")) + list(scenario_dir.rglob("log_mimir_*.txt"))
+        all_txt_files.extend(txt_files)
+        logging.info(f"  {scenario}: {len(txt_files)} TXT files")
     
     logging.info(f"Total: {len(all_txt_files)} TXT files")
     
@@ -191,7 +197,7 @@ def main():
     total_rows = 0
     
     for txt_path in tqdm(all_txt_files, desc="Processing"):
-        success, rows, output_path = process_single_txt(txt_path, config, data_root, args.overwrite)
+        success, rows, output_path = process_single_txt(txt_path, config, args.overwrite)
         
         if success:
             if rows > 0:

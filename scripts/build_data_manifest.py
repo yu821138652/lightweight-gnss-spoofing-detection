@@ -16,9 +16,7 @@ from typing import Iterable
 
 RAW_PATTERNS = ("gnss_log_*.txt", "log_mimir_*.txt")
 ENVIRONMENTS = ("playground", "new_building")
-SCENARIOS = ("st_L1", "st_L5", "st_L_15", "dy_L1", "dy_L5", "dy_L_15")
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_DATA_ROOT = PROJECT_ROOT / "data_raw"
+DEFAULT_DATA_ROOT = Path(r"H:\GNSS\real_world_spoofing_dataset_pipeline\data_raw")
 DEFAULT_OUTPUT = Path(__file__).resolve().parents[1] / "docs" / "data_manifest.csv"
 
 
@@ -62,24 +60,13 @@ def parse_log_path(data_root: Path, raw_path: Path) -> tuple[str, str, str, str,
     rel = raw_path.relative_to(data_root)
     parts = rel.parts
 
-    if len(parts) > 1 and parts[0] in ENVIRONMENTS:
-        environment = parts[0]
-        scenario = parts[1]
-        offset = 2
-    elif len(parts) > 0 and parts[0] in SCENARIOS:
-        environment = "playground"
-        scenario = parts[0]
-        offset = 1
-    else:
-        environment = parts[0] if len(parts) > 0 else "unknown"
-        scenario = parts[1] if len(parts) > 1 else "unknown"
-        offset = 2
+    environment = parts[0] if len(parts) > 0 else "unknown"
+    scenario = parts[1] if len(parts) > 1 else "unknown"
+    session = parts[2] if len(parts) > 2 else "unknown"
+    device = parts[3] if len(parts) > 3 else "unknown"
 
-    session = parts[offset] if len(parts) > offset else "unknown"
-    device = parts[offset + 1] if len(parts) > offset + 1 else "unknown"
-
-    if len(parts) > offset + 3:
-        sub_path = str(Path(*parts[offset + 2:-1]))
+    if len(parts) > 5:
+        sub_path = str(Path(*parts[4:-1]))
     else:
         sub_path = ""
 
