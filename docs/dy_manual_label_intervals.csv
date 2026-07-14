@@ -1,0 +1,6 @@
+Environment,Scenario,Session,StartTOW,EndTOW,LabelStatus,LabelSource,Note
+new_building,dy_L1,2025.07.29.20.04_新主楼,216554,216586,reviewed,manual_review,Multi-device manual review
+new_building,dy_L5,2025.07.29.20.52_新主楼,219394,219412,reviewed,manual_review,Multi-device manual review
+new_building,dy_L_15,2025.07.29.17.32_新主楼,207345,207364,reviewed,manual_review,Multi-device manual review
+new_building,dy_L_15,2025.07.29.18.27_新主楼,210685,210708,reviewed,manual_review,Multi-device manual review
+new_building,dy_L_15,2025.07.29.18.33_新主楼,211060,211083,reviewed,manual_review,Overlapping manual entries consolidated to the union
