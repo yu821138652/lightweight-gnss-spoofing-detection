@@ -41,7 +41,26 @@ labeling:
   # normal. Unlisted new_building sessions are emitted with LabelStatus=
   # needs_review and must not enter formal training.
   session_spoofing_tow_intervals:
-    new_building: {}
+    new_building:
+      st_L1:
+        "2025.07.29.19.22_新主楼":
+          status: reviewed
+          intervals: [[214396, 215011]]
+      st_L5:
+        "2025.07.29.20.16_新主楼":
+          status: reviewed
+          intervals: [[217683, 218305]]
+        # 该记录从同一段 L5 欺骗事件进行中开始采集。
+        "2025.07.29.20.36_新主楼":
+          status: reviewed
+          intervals: [[217683, 218305]]
+      st_L_15:
+        "2025.07.29.18.42_新主楼":
+          status: reviewed
+          intervals: [[212025, 212648]]
+        "2025.07.29.19.22_新主楼":
+          status: reviewed
+          intervals: [[214396, 215011]]
 
   spoofing_tow_intervals:
     st_L1: [[262228, 262860]]
