@@ -1,6 +1,5 @@
 import pandas as pd
 import numpy as np
-import torch
 import json
 import logging
 import argparse
@@ -23,6 +22,7 @@ FEATURE_COLS = [
     'AgcDb', 'ReceivedSvTimeUncertaintyNanos',
     'PseudorangeRateUncertaintyMetersPerSecond',
     'AccumulatedDeltaRangeUncertaintyMeters',
+    'FreqBand',
 ]
 
 FEATURE_PRESETS = {
@@ -33,8 +33,9 @@ FEATURE_PRESETS = {
         'ReceivedSvTimeUncertaintyNanos',
         'PseudorangeRateUncertaintyMetersPerSecond',
         'AccumulatedDeltaRangeUncertaintyMeters',
+        'FreqBand',
     ],
-    'no_uncertainty': ['Cn0DbHz', 'Cn0DbHz_dt', 'Cn0DbHz_std', 'AgcDb'],
+    'no_uncertainty': ['Cn0DbHz', 'Cn0DbHz_dt', 'Cn0DbHz_std', 'AgcDb', 'FreqBand'],
 }
 
 
@@ -148,6 +149,132 @@ def preprocess_features(df):
     df[FEATURE_COLS] = df[FEATURE_COLS].astype(np.float32)
 
     return df
+
+
+def perform_recording_level_split(df, output_dir, holdout_device=None):
+    """Split complete recordings while keeping tensor windows device-local.
+
+    ``recording_id`` identifies one shared experiment across all devices and
+    is the split unit. ``session_id`` identifies one source device log and is
+    the tensor-window unit, preventing equal signal IDs from different
+    receivers from sharing a tensor slot.
+    """
+    required_columns = {'Environment', 'Scenario', 'Session', 'DeviceName'}
+    missing = required_columns.difference(df.columns)
+    if missing:
+        raise ValueError(f"Recording-level split requires columns: {sorted(missing)}")
+    if holdout_device:
+        raise ValueError(
+            "--holdout_device is disabled for recording-level splits: a held-out "
+            "device can share a physical recording with other devices. Build a "
+            "separate explicit LODO protocol instead of leaking that recording."
+        )
+
+    logging.info("--- 1. Recording-Level Stratified Split (no cross-device leakage) ---")
+    recording_columns = ['Environment', 'Scenario', 'Session']
+    recording_index = pd.MultiIndex.from_frame(df[recording_columns].astype(str))
+    recording_ids, _ = pd.factorize(recording_index, sort=True)
+    df['recording_id'] = recording_ids.astype(np.int32)
+
+    if 'SourceRelativePath' in df.columns and df['SourceRelativePath'].notna().all():
+        sequence_source = df['SourceRelativePath'].astype(str)
+    elif 'SourceFile' in df.columns:
+        sequence_source = df['DeviceName'].astype(str) + '|' + df['SourceFile'].astype(str)
+    else:
+        sequence_source = df['DeviceName'].astype(str)
+        logging.warning("SourceRelativePath is unavailable; tensor sequences fall back to DeviceName.")
+    sequence_index = pd.MultiIndex.from_arrays([df['recording_id'], sequence_source])
+    sequence_ids, _ = pd.factorize(sequence_index, sort=True)
+    df['session_id'] = sequence_ids.astype(np.int32)
+
+    recording_meta = (
+        df.groupby('recording_id', sort=True)
+        .agg(
+            Environment=('Environment', 'first'),
+            Scenario=('Scenario', 'first'),
+            Session=('Session', 'first'),
+            rows=('Label', 'size'),
+            positive_rows=('Label', 'sum'),
+            device_count=('DeviceName', 'nunique'),
+            sequence_count=('session_id', 'nunique'),
+        )
+        .reset_index()
+    )
+    recording_meta['split'] = ''
+    ratios = {'train': 0.70, 'val': 0.15, 'test': 0.15}
+
+    # Allocate within each environment/scenario stratum. A singleton must stay
+    # in train because it cannot support an isolated validation/test metric.
+    for _, stratum in recording_meta.groupby(['Environment', 'Scenario'], sort=True):
+        ordered = stratum.copy()
+        ordered['_hash'] = ordered.apply(
+            lambda row: stable_hash_mod(f"{row['Environment']}|{row['Scenario']}|{row['Session']}"),
+            axis=1,
+        )
+        ordered = ordered.sort_values(['_hash', 'Session'], kind='mergesort')
+        split_rows = {name: 0 for name in ratios}
+        if len(ordered) == 1:
+            initial_splits = ['train']
+        elif len(ordered) == 2:
+            initial_splits = ['train', 'test']
+        else:
+            initial_splits = ['train', 'val', 'test']
+        target_rows = max(int(ordered['rows'].sum()), 1)
+
+        for position, (_, row) in enumerate(ordered.iterrows()):
+            if position < len(initial_splits):
+                split = initial_splits[position]
+            else:
+                split = min(
+                    ratios,
+                    key=lambda name: split_rows[name] / max(target_rows * ratios[name], 1),
+                )
+            recording_meta.loc[recording_meta['recording_id'] == row['recording_id'], 'split'] = split
+            split_rows[split] += int(row['rows'])
+
+    # Scenario strata with only one or two recordings cannot independently
+    # populate every split. Repair broad static/dynamic coverage globally when
+    # a donor split still retains another recording of that family.
+    recording_meta['is_dynamic'] = recording_meta['Scenario'].astype(str).str.startswith('dy_')
+    for target_split in ratios:
+        for is_dynamic in (False, True):
+            target_mask = (recording_meta['split'] == target_split) & (recording_meta['is_dynamic'] == is_dynamic)
+            if target_mask.any():
+                continue
+            candidates = []
+            for donor_split in ratios:
+                if donor_split == target_split:
+                    continue
+                donor_mask = (recording_meta['split'] == donor_split) & (recording_meta['is_dynamic'] == is_dynamic)
+                donors = recording_meta[donor_mask]
+                if len(donors) > 1:
+                    candidates.append(donors)
+            if not candidates:
+                logging.warning(
+                    "Cannot add %s coverage to %s without emptying another split.",
+                    'dynamic' if is_dynamic else 'static', target_split,
+                )
+                continue
+            selected = pd.concat(candidates, ignore_index=True).sort_values(
+                ['rows', 'recording_id'], kind='mergesort'
+            ).iloc[0]
+            recording_meta.loc[
+                recording_meta['recording_id'] == selected['recording_id'], 'split'
+            ] = target_split
+
+    split_by_recording = recording_meta.set_index('recording_id')['split']
+    df['split'] = df['recording_id'].map(split_by_recording)
+    if df.groupby('recording_id')['split'].nunique().max() != 1:
+        raise RuntimeError('A recording was assigned to more than one split.')
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    manifest_path = output_dir / 'recording_split_manifest.csv'
+    recording_meta.to_csv(manifest_path, index=False, encoding='utf-8-sig')
+    logging.info("Recording split result: %s", df['split'].value_counts().to_dict())
+    logging.info("Saved recording split manifest: %s", manifest_path)
+    return df
+
 
 def perform_stratified_split(df, holdout_device=None):
     if holdout_device:
@@ -577,6 +704,8 @@ def main():
                         help='Maximum independent signals per window; overflow is an error, never silently truncated.')
     parser.add_argument('--include-unreviewed', action='store_true',
                         help='Include rows whose LabelStatus is not reviewed. Disabled by default.')
+    parser.add_argument('--split-only', action='store_true',
+                        help='Write and inspect recording_split_manifest.csv without building NPZ tensors.')
     args = parser.parse_args()
     global FEATURE_COLS, MAX_SIGNALS
     FEATURE_COLS = FEATURE_PRESETS[args.feature_preset]
@@ -653,7 +782,10 @@ def main():
     # 4. 标准处理流程
     # =============================================
     df = preprocess_features(df)
-    df_split = perform_stratified_split(df, args.holdout_device)
+    df_split = perform_recording_level_split(df, output_dir, args.holdout_device)
+    if args.split_only:
+        logging.info("Split-only mode complete; no NPZ tensors were written.")
+        return
     if args.norm_mode == 'global':
         df_norm = perform_global_norm(df_split, output_dir)
     else:

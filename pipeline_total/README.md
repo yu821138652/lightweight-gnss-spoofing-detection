@@ -160,13 +160,21 @@ python pipeline_total/04_build_labeled_processed_csv.py --mode full --config you
 
 来源：`pipeline/02_build_tensors.py`
 
-作用：把 `processed_gnss_data.csv` 构造成训练用 NPZ 张量，默认使用 `signal_id` 作为空间槽位并排除未审查标签。
+作用：把 `processed_gnss_data.csv` 构造成训练用 NPZ 张量，默认使用 `signal_id` 作为空间槽位并排除未审查标签。训练/验证/测试以 `Environment + Scenario + Session` 为不可拆分的真实录制单元，同一场实验的多设备数据不会落入不同集合；每个设备日志仍生成独立张量，避免不同接收机的同名 `signal_id` 相互覆盖。划分会在数据允许时保证每个集合都含静态和动态录制。每次运行会输出 `recording_split_manifest.csv` 供复现与审计。
 
 常用命令：
 
 ```bash
 python pipeline_total/05_build_train_val_test_tensors.py --csv output/processed_gnss_data.csv --output_dir output/tensors_mixed --scenario mixed --max-signals 128
 ```
+
+在首次构建张量前，先只生成并检查真实录制级划分清单。这样做是为了确认同一场实验的多设备数据没有跨集合泄漏：
+
+```bash
+python pipeline_total/05_build_train_val_test_tensors.py --csv output/processed_gnss_data.csv --output_dir output/tensors_mixed --scenario mixed --split-only
+```
+
+检查 `output/tensors_mixed/recording_split_manifest.csv` 后，再去掉 `--split-only` 生成 NPZ。
 
 静态/动态分别构建：
 
@@ -179,7 +187,7 @@ python pipeline_total/05_build_train_val_test_tensors.py --csv output/processed_
 
 来源：`scripts/verify_data.py`
 
-作用：检查 `train.npz / val.npz / test.npz` 内部张量形状、标签分布、划分是否健康。
+作用：检查 `train.npz / val.npz / test.npz` 的张量形状、二分类标签分布，并读取 `recording_split_manifest.csv` 验证真实录制单元没有重复分配到不同集合。
 
 常用命令：
 
