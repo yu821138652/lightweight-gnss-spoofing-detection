@@ -194,7 +194,7 @@ def main():
         process_scenario(scenario, input_base=args.input_base, output_base=args.output_base)
     
     print("\n" + "=" * 60)
-    print("✅ All plots generated!")
+    print("All plots generated.")
     print("=" * 60)
 
 
