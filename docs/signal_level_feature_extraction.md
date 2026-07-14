@@ -1,59 +1,79 @@
-# Signal-Level Feature Extraction
+# 信号级 GNSS 特征提取流程
 
-## Decision
+## 方案结论
 
-The canonical processed dataset is `data_csv/`. It is signal-level, not
-satellite-level: `sv_id` remains available for satellite analyses, while
-`signal_id` identifies an independently tracked GNSS signal.
+项目当前规范化处理数据目录为 `data_csv/`。数据以**独立信号**为基本单位，
+而不是仅以卫星为单位：`sv_id` 保留用于卫星级分析，`signal_id` 用于区分真正
+独立的 GNSS 信号时间序列。
 
 ```text
 signal_id = sv_id | SignalBand | CodeType
 ```
 
-For example, one BDS satellite can yield `C20|BDS_B1I|I` and
-`C20|BDS_B1C|Q` at the same receiver epoch. They must not share a C/N0
-derivative, a split CSV file, or a tensor slot.
+例如，同一颗北斗卫星可以在同一接收历元产生：
 
-## Data Invariants
+```text
+C20|BDS_B1I|I
+C20|BDS_B1C|Q
+```
 
-- `Cn0DbHz_dt` and `Cn0DbHz_std` are computed within one `signal_id`, ordered
-  by `TimeNanos`.
-- Repeated `signal_id + TimeNanos` observations are collapsed before temporal
-  features; `SignalEpochCount` preserves the original multiplicity.
-- `SignalBand` is derived from constellation type and carrier frequency with a
-  bounded frequency tolerance. Unknown signals remain visible as `UNKNOWN_*`.
-- New-building rows without reviewed session intervals use
-  `LabelStatus=needs_review` and are excluded by default from tensor builds.
-- Signal tensors use up to 128 slots by default. Overflow raises an error
-  instead of silently truncating observations. Use `--max-signals` for
-  deployment-capacity ablations.
+两者不能共用 C/N0 差分、拆分 CSV 文件或张量槽位。
 
-## Commands
+## 数据约束
 
-Rebuild the mirrored signal-level CSV files:
+- `Cn0DbHz_dt` 和 `Cn0DbHz_std` 在同一 `signal_id` 内按 `TimeNanos` 计算。
+- 对重复的 `signal_id + TimeNanos` 观测，预处理先执行确定性聚合；
+  `SignalEpochCount` 保留聚合前的观测数量。
+- `SignalBand` 由星座类型与载频在限定容差内映射得到；无法识别的信号保留为
+  `UNKNOWN_*`，不会被静默归入错误频段。
+- 未录入人工确认 Session 区间的新主楼数据使用 `LabelStatus=needs_review`，
+  张量构建器默认排除这些数据。
+- 张量默认最多使用 128 个独立信号槽位。超过容量时脚本会报错，绝不静默截断；
+  可通过 `--max-signals` 开展 64/96/128 槽位的部署开销消融。
+
+## 常用命令
+
+全量重建逐日志信号级 CSV：
 
 ```powershell
 python scripts/build_mirrored_data_csv.py --overwrite
 ```
 
-Split each source file by independent signal for plotting and label review:
+按独立信号拆分，供可视化和标签复核使用：
 
 ```powershell
 python scripts/split_csv_by_sv_id.py --group-column signal_id --sort-columns TOW TimeNanos --overwrite
 ```
 
-Build training tensors from reviewed labels only:
+仅使用已审查标签构建训练张量：
 
 ```powershell
 python pipeline_total/05_build_train_val_test_tensors.py --csv output/processed_gnss_data.csv --output_dir output/tensor_data --max-signals 128
 ```
 
-The tensor builder falls back to `sv_id` only for an explicit legacy CSV that
-does not contain `signal_id`. Do not use that fallback for formal results.
+张量构建器只会在旧 CSV 缺少 `signal_id` 时回退到 `sv_id`。该回退模式仅用于
+复现旧基线，不可用于正式实验结果。
 
-## Validation Snapshot
+## 当前验证结果
 
-The current full rebuild contains 133 source CSV files and 3,175,866 rows.
-It produced 7,044 `_by_signal_id` files with the same total row count. The
-audit found no missing required fields, no unknown signal bands, and no
-duplicate signal epochs in the current data.
+本次全量重建得到：
+
+```text
+源 CSV：133 个
+源数据行：3,175,866 行
+信号级拆分文件：7,044 个
+拆分后总行数：3,175,866 行
+```
+
+审计结果：
+
+```text
+必需字段缺失文件：0
+未知 SignalBand 行：0
+重复信号历元行：0
+包含多个 signal_id 的拆分文件：0
+```
+
+新主楼的欺骗 TOW 区间仍需按 `Environment + Scenario + Session` 人工复核后写入
+`configs/preprocessing.yml` 的 `session_spoofing_tow_intervals.new_building`。在此之前，
+这些数据保持 `needs_review`，不进入正式训练。
