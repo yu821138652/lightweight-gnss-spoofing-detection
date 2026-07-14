@@ -131,6 +131,11 @@ def main() -> None:
     parser.add_argument("--output-root", type=Path, default=None, help="Output root. Defaults to sibling data_csv.")
     parser.add_argument("--environment", choices=sorted(preprocess.ENVIRONMENTS), default=None, help="Only process one environment.")
     parser.add_argument("--scenario", choices=sorted(preprocess.SCENARIOS), default=None, help="Only process one scenario.")
+    parser.add_argument(
+        "--session",
+        default=None,
+        help="Only process one session directory, for example 2025.07.29.19.22_新主楼.",
+    )
     parser.add_argument("--overwrite", action="store_true", help="Overwrite existing CSV files.")
     parser.add_argument(
         "--offset",
@@ -157,6 +162,8 @@ def main() -> None:
         raw_files = [p for p in raw_files if args.environment in p.relative_to(mirror_root).parts]
     if args.scenario:
         raw_files = [p for p in raw_files if args.scenario in p.relative_to(mirror_root).parts]
+    if args.session:
+        raw_files = [p for p in raw_files if args.session in p.relative_to(mirror_root).parts]
     if args.offset < 0:
         parser.error("--offset must be non-negative")
     if args.offset:

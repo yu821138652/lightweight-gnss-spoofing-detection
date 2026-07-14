@@ -77,3 +77,52 @@ python pipeline_total/05_build_train_val_test_tensors.py --csv output/processed_
 新主楼的欺骗 TOW 区间仍需按 `Environment + Scenario + Session` 人工复核后写入
 `configs/preprocessing.yml` 的 `session_spoofing_tow_intervals.new_building`。在此之前，
 这些数据保持 `needs_review`，不进入正式训练。
+
+## 新主楼协作标注流程
+
+每名成员负责一个完整的 `Scenario + Session`，不要按设备拆分任务。欺骗标签应由
+同一 Session 的多台设备共同确认，最终只写入一次 Session 级区间。
+
+1. 生成待标注 Session 的信号级绘图 CSV：
+
+   ```powershell
+   python pipeline_total/01_generate_plot_feature_csv.py --data-root data_raw/new_building --overwrite
+   ```
+
+2. 绘制该场景的信号时序图：
+
+   ```powershell
+   python pipeline_total/02_batch_plot_feature_images.py --input-base data_raw/new_building --output-base output/new_building_label_plots --scenario st_L1
+   ```
+
+3. 优先查看至少两台设备的 `Cn0DbHz`，并使用可用设备的 `AgcDb`、时间不确定度和
+   伪距率不确定度交叉验证。Pixel Watch1 的 AGC 全缺失，不能单独作为 AGC 依据。
+
+4. 记录所有设备共同出现的异常开始/结束秒。区间两端均为闭区间，格式为
+   `[start_tow, end_tow]`。仅有单设备异常、日志中断或无法确定的片段不写入正式标签。
+
+5. 将已确认结果写入 `configs/preprocessing.yml`：
+
+   ```yaml
+   labeling:
+     session_spoofing_tow_intervals:
+       new_building:
+         st_L1:
+           "2025.07.29.19.22_新主楼":
+             status: reviewed
+             intervals:
+               - [start_tow, end_tow]
+   ```
+
+   已确认全程正常的 Session 使用 `status: reviewed` 与空 `intervals: []`。未完成复核的
+   Session 不应写入配置，会自动保留为 `needs_review`。
+
+6. 仅重建本人负责的 Session，并重新运行 CSV 审计：
+
+   ```powershell
+   python scripts/build_mirrored_data_csv.py --environment new_building --scenario st_L1 --session 2025.07.29.19.22_新主楼 --overwrite
+   python scripts/audit_extracted_csv.py --input-dir data_csv --output-json output/data_csv_audit.json
+   ```
+
+7. 在协作记录中提交 `Scenario`、`Session`、候选区间、交叉验证设备、图像路径和复核人。
+   未经第二人复核的区间只作为候选，不进入 `reviewed` 配置。
