@@ -33,17 +33,29 @@ C20|BDS_B1C|Q
 
 ## 常用命令
 
+**何时运行：** 修改了解析、特征、标签配置，或所有新主楼 Session 都完成复核后。
+
+**为什么运行：** 让全部 `data_csv/` 与当前代码和标签配置一致；它会覆盖派生 CSV，但不会修改原始 TXT。
+
 全量重建逐日志信号级 CSV：
 
 ```powershell
 python scripts/build_mirrored_data_csv.py --overwrite
 ```
 
+**何时运行：** 全量 CSV 重建完成后，或需要按独立信号查看时序细节时。
+
+**为什么运行：** 每个拆分文件只保留一个 `signal_id`，避免同一卫星的不同频率、不同 CodeType 在图中混成一条曲线。
+
 按独立信号拆分，供可视化和标签复核使用：
 
 ```powershell
 python scripts/split_csv_by_sv_id.py --group-column signal_id --sort-columns TOW TimeNanos --overwrite
 ```
+
+**何时运行：** 标签审查完成、集合版 `processed_gnss_data.csv` 已生成，且准备开始训练或槽位容量消融时。
+
+**为什么运行：** 把不定长的信号观测组织为模型输入；默认排除 `needs_review`，并确保超过槽位容量时显式报错而非丢失信号。
 
 仅使用已审查标签构建训练张量：
 
@@ -83,13 +95,21 @@ python pipeline_total/05_build_train_val_test_tensors.py --csv output/processed_
 每名成员负责一个完整的 `Scenario + Session`，不要按设备拆分任务。欺骗标签应由
 同一 Session 的多台设备共同确认，最终只写入一次 Session 级区间。
 
-1. 生成待标注 Session 的信号级绘图 CSV：
+1. **何时运行：** 第一次接手新主楼标注任务，或预处理逻辑更新后。
+
+   **为什么运行：** 从原始 TXT 生成包含 `SignalID`、C/N0、AGC 与不确定度的绘图中间表；没有这一步无法可靠地按独立信号查看异常。
+
+   生成待标注 Session 的信号级绘图 CSV：
 
    ```powershell
    python pipeline_total/01_generate_plot_feature_csv.py --data-root data_raw/new_building --overwrite
    ```
 
-2. 绘制该场景的信号时序图：
+2. **何时运行：** 绘图 CSV 已生成，准备判断某个场景中各 Session 的欺骗起止时间时。
+
+   **为什么运行：** 将多设备、多信号的特征变化转为可比对的 PNG，作为人工 TOW 标签的直接证据。
+
+   绘制该场景的信号时序图：
 
    ```powershell
    python pipeline_total/02_batch_plot_feature_images.py --input-base data_raw/new_building --output-base output/new_building_label_plots --scenario st_L1
@@ -101,7 +121,11 @@ python pipeline_total/05_build_train_val_test_tensors.py --csv output/processed_
 4. 记录所有设备共同出现的异常开始/结束秒。区间两端均为闭区间，格式为
    `[start_tow, end_tow]`。仅有单设备异常、日志中断或无法确定的片段不写入正式标签。
 
-5. 将已确认结果写入 `configs/preprocessing.yml`：
+5. **何时运行：** 至少两台设备的变化共同支持同一候选区间，并完成第二人复核后。
+
+   **为什么运行：** 标签配置是从原始 TXT 重新生成 `Label` 的唯一依据；只修改 CSV 会在下一次重建时丢失。
+
+   将已确认结果写入 `configs/preprocessing.yml`：
 
    ```yaml
    labeling:
@@ -117,7 +141,11 @@ python pipeline_total/05_build_train_val_test_tensors.py --csv output/processed_
    已确认全程正常的 Session 使用 `status: reviewed` 与空 `intervals: []`。未完成复核的
    Session 不应写入配置，会自动保留为 `needs_review`。
 
-6. 仅重建本人负责的 Session，并重新运行 CSV 审计：
+6. **何时运行：** 第 5 步写入或修改该 Session 的正式区间后。
+
+   **为什么运行：** 将新标签真正写入该 Session 全部设备的派生 CSV，并通过审计确认字段和标签状态正确；不必每次重跑全部 133 个日志。
+
+   仅重建本人负责的 Session，并重新运行 CSV 审计：
 
    ```powershell
    python scripts/build_mirrored_data_csv.py --environment new_building --scenario st_L1 --session 2025.07.29.19.22_新主楼 --overwrite
