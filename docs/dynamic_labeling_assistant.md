@@ -6,6 +6,9 @@
 
 它只生成**候选区间**，不自动修改 `configs/preprocessing.yml`，更不会把候选直接写入训练标签。
 
+已经完成复核的动态新主楼标签记录在 `docs/dy_manual_label_intervals.csv`，并以
+`configs/preprocessing.yml` 中的 Session 级区间作为数据重建时的唯一正式来源。
+
 ## 何时运行
 
 完成 `data_csv/new_building/` 的信号级 CSV 重建、但某个 `dy_*` Session 的原始特征图看不出明确欺骗边界时运行。建议每位标注人员只处理自己负责的场景或 Session。

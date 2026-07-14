@@ -61,6 +61,25 @@ labeling:
         "2025.07.29.19.22_新主楼":
           status: reviewed
           intervals: [[214396, 215011]]
+      dy_L1:
+        "2025.07.29.20.04_新主楼":
+          status: reviewed
+          intervals: [[216554, 216586]]
+      dy_L5:
+        "2025.07.29.20.52_新主楼":
+          status: reviewed
+          intervals: [[219394, 219412]]
+      dy_L_15:
+        "2025.07.29.17.32_新主楼":
+          status: reviewed
+          intervals: [[207345, 207364]]
+        "2025.07.29.18.27_新主楼":
+          status: reviewed
+          intervals: [[210685, 210708]]
+        # Two overlapping manual entries were consolidated to their union.
+        "2025.07.29.18.33_新主楼":
+          status: reviewed
+          intervals: [[211060, 211083]]
 
   spoofing_tow_intervals:
     st_L1: [[262228, 262860]]

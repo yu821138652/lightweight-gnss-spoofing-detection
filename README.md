@@ -307,12 +307,12 @@ python scripts/build_csv_session_manifest.py \
 当前 CSV 审计结论：
 
 ```text
-new_building 的静态场景已有部分 Session 完成人工复核；动态 dy_* Session 仍需逐 Session 确认短时欺骗区间，不能进入正式跨环境检测率评估
+new_building 的静态与动态 Session 均已按独立 TOW 区间完成人工复核；正式跨环境实验前仍应先运行一次全量 CSV 审计
 Google_Pixel_Watch1 的 AgcDb 全缺失，后续需要保留缺失标记并做 no-AGC 消融
 Cn0DbHz_dt / Cn0DbHz_std 已按独立 signal_id 重建，训练和绘图均应继续使用信号级 CSV
 ```
 
-在完成动态新主楼标签补充前，不得开始正式跨环境模型训练。
+在完成全量 CSV 审计并确认训练/验证/测试按 Session 隔离前，不得开始正式跨环境模型训练。
 
 ## 推荐流程
 
