@@ -43,8 +43,8 @@ def check_tensor_distribution(npz_path: Path, split_name: str) -> bool:
     active_ratio = float(mask.mean()) if mask.size else 0.0
 
     print(f"{split_name}: x={x.shape}, active_slots={active_ratio:.2%}, labels={distribution}")
-    if x.shape[-1] != 8:
-        print(f"WARNING: expected 8 core features, found {x.shape[-1]}")
+    if x.shape[-1] != 7:
+        print(f"WARNING: expected 7 core features, found {x.shape[-1]}")
     if invalid.size:
         print(f"ERROR: {split_name} contains invalid active labels: {np.unique(invalid).tolist()}")
         return False

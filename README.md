@@ -123,7 +123,7 @@ Cn0DbHz_std
 AgcDb
 ReceivedSvTimeUncertaintyNanos
 PseudorangeRateUncertaintyMetersPerSecond
-AccumulatedDeltaRangeUncertaintyMeters
+FreqBand
 ```
 
 其中，真正作为模型输入的核心特征为：
@@ -229,7 +229,7 @@ AccumulatedDeltaRangeUncertaintyMeters
 
 ### 第一版核心特征集
 
-第一版模型输入固定为 8 个核心特征：
+第一版模型输入固定为 7 个核心特征：
 
 ```text
 Cn0DbHz
@@ -238,11 +238,10 @@ Cn0DbHz_std
 AgcDb
 ReceivedSvTimeUncertaintyNanos
 PseudorangeRateUncertaintyMetersPerSecond
-AccumulatedDeltaRangeUncertaintyMeters
 FreqBand
 ```
 
-这组特征数量少、来源清晰、真实设备可获得，符合轻量化部署主线。后续如果需要扩展特征，应通过消融实验验证其贡献，避免盲目堆叠特征。
+`AccumulatedDeltaRangeUncertaintyMeters` 保留在 CSV、审计和可视化中，但因人工标注阶段未表现出稳定判别价值，不进入默认模型输入。它可在后续消融实验中单独验证。其余特征数量少、来源清晰、真实设备可获得，符合轻量化部署主线。
 
 ## 生成数据清单
 

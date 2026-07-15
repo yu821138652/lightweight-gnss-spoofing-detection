@@ -119,7 +119,6 @@ Cn0DbHz_std
 AgcDb
 ReceivedSvTimeUncertaintyNanos
 PseudorangeRateUncertaintyMetersPerSecond
-AccumulatedDeltaRangeUncertaintyMeters
 FreqBand
 ```
 
@@ -128,6 +127,7 @@ FreqBand
 - `Cn0DbHz_dt` 为同一颗卫星相邻时刻 C/N0 差分；
 - `Cn0DbHz_std` 为同一颗卫星滑动窗口内 C/N0 标准差；
 - `FreqBand` 由 `CarrierFrequencyHz` 判断得到。
+- `AccumulatedDeltaRangeUncertaintyMeters` 仍会提取到 CSV，作为后续消融候选，不进入默认模型输入。
 
 除核心输入特征外，每个输出 CSV 还保留以下字段，用于排序、标注、分组和实验划分：
 

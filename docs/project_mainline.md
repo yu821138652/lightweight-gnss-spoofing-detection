@@ -131,10 +131,7 @@ Cn0DbHz_std
 AgcDb
 ReceivedSvTimeUncertaintyNanos
 PseudorangeRateUncertaintyMetersPerSecond
-AccumulatedDeltaRangeUncertaintyMeters
 FreqBand
-sv_id
-DeviceName
 ```
 
 其中，重点特征是：
@@ -143,7 +140,6 @@ DeviceName
 - AGC；
 - 卫星时间不确定度；
 - 伪距率不确定度；
-- ADR 不确定度；
 - 频段与设备信息。
 
 ### 4.2 轻量化模型部署

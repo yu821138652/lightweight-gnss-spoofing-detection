@@ -22,7 +22,7 @@ FEATURE_COLS = [
     'Cn0DbHz', 'Cn0DbHz_dt', 'Cn0DbHz_std',
     'AgcDb', 'ReceivedSvTimeUncertaintyNanos',
     'PseudorangeRateUncertaintyMetersPerSecond',
-    'AccumulatedDeltaRangeUncertaintyMeters',
+    'FreqBand',
 ]
 
 # Set up logging

@@ -25,11 +25,10 @@ Cn0DbHz_std
 AgcDb
 ReceivedSvTimeUncertaintyNanos
 PseudorangeRateUncertaintyMetersPerSecond
-AccumulatedDeltaRangeUncertaintyMeters
 FreqBand
-sv_id
-DeviceName
 ```
+
+`sv_id`、`DeviceName` 用于信号组织和实验划分，不作为默认模型输入；ADR 不确定度保留用于消融，不进入首版模型。
 
 ## Required Experiments
 

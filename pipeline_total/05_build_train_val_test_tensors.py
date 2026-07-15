@@ -21,7 +21,6 @@ FEATURE_COLS = [
     'Cn0DbHz', 'Cn0DbHz_dt', 'Cn0DbHz_std',
     'AgcDb', 'ReceivedSvTimeUncertaintyNanos',
     'PseudorangeRateUncertaintyMetersPerSecond',
-    'AccumulatedDeltaRangeUncertaintyMeters',
     'FreqBand',
 ]
 
@@ -32,7 +31,6 @@ FEATURE_PRESETS = {
         'Cn0DbHz', 'Cn0DbHz_dt', 'Cn0DbHz_std',
         'ReceivedSvTimeUncertaintyNanos',
         'PseudorangeRateUncertaintyMetersPerSecond',
-        'AccumulatedDeltaRangeUncertaintyMeters',
         'FreqBand',
     ],
     'no_uncertainty': ['Cn0DbHz', 'Cn0DbHz_dt', 'Cn0DbHz_std', 'AgcDb', 'FreqBand'],
