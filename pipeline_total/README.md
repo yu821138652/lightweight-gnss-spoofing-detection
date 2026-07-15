@@ -160,7 +160,7 @@ python pipeline_total/04_build_labeled_processed_csv.py --mode full --config you
 
 来源：`pipeline/02_build_tensors.py`
 
-作用：把 `processed_gnss_data.csv` 构造成训练用 NPZ 张量，默认使用 `signal_id` 作为空间槽位并排除未审查标签。训练/验证/测试以 `Environment + Scenario + Session` 为不可拆分的真实录制单元，同一场实验的多设备数据不会落入不同集合；每个设备日志仍生成独立张量，避免不同接收机的同名 `signal_id` 相互覆盖。划分会在数据允许时保证每个集合都含静态和动态录制。每次运行会输出 `recording_split_manifest.csv` 供复现与审计。
+作用：把 `processed_gnss_data.csv` 构造成训练用 NPZ 张量，默认使用 `signal_id` 作为空间槽位并排除未审查标签。每个输入由截至当前时刻的 5 个历元组成，目标是窗口末端当前历元的标签，只有末端出现的信号参与损失和指标。训练/验证/测试以 `Environment + Scenario + Session` 为不可拆分的真实录制单元，同一场实验的多设备数据不会落入不同集合；每个设备日志仍生成独立张量，避免不同接收机的同名 `signal_id` 相互覆盖。划分会在数据允许时保证每个集合都含静态和动态录制。每次运行会输出 `recording_split_manifest.csv` 供复现与审计。
 
 常用命令：
 
@@ -230,13 +230,15 @@ C:\Users\Asus\AppData\Local\Microsoft\WindowsApps\PythonSoftwareFoundation.Pytho
 
 张量接口、模型扩展方式、测试集使用边界和 TSLib 适配原则见 `docs/model_training_framework.md`。
 
+张量以连续 5 个历元构成因果输入窗口，标签固定为窗口末端当前历元的信号级 `Label`；窗口内先前历元只作为历史上下文。重建张量后，旧 checkpoint 及其指标不能与新标签语义下的结果混用。
+
 ## 08_inference.py
 
 来源：`pipeline/04_inference.py`
 
 作用：历史模型接口的 CSV 推理脚本。
 
-**当前状态：** 该脚本尚未适配 `signal_mlp / signal_gru` checkpoint，不可用于本次新 baseline。原因是新模型输出逐信号概率，而部署推理还需先在验证集确定多信号设备级报警聚合规则。完成 baseline 选择与报警规则设计后，再单独适配该脚本。
+**当前状态：** 该脚本尚未适配 `signal_mlp / signal_gru` checkpoint，不可用于本次新 baseline。原因是新模型输出逐信号概率，而部署推理还需先在验证集确定多信号设备级报警聚合规则。完成 baseline 选择与报警规则设计后，再单独适配该脚本；在此之前不得基于它形成部署性能结论。
 
 示例：
 

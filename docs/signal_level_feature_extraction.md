@@ -71,7 +71,7 @@ python pipeline_total/05_build_train_val_test_tensors.py --csv output/processed_
 本次全量重建得到：
 
 ```text
-源 CSV：133 个
+源 CSV：132 个
 源数据行：3,175,866 行
 信号级拆分文件：7,044 个
 拆分后总行数：3,175,866 行
@@ -143,7 +143,7 @@ python pipeline_total/05_build_train_val_test_tensors.py --csv output/processed_
 
 6. **何时运行：** 第 5 步写入或修改该 Session 的正式区间后。
 
-   **为什么运行：** 将新标签真正写入该 Session 全部设备的派生 CSV，并通过审计确认字段和标签状态正确；不必每次重跑全部 133 个日志。
+   **为什么运行：** 将新标签真正写入该 Session 全部设备的派生 CSV，并通过审计确认字段和标签状态正确；不必每次重跑全部 132 个日志。
 
    仅重建本人负责的 Session，并重新运行 CSV 审计：
 

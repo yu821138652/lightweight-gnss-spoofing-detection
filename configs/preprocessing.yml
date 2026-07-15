@@ -58,9 +58,6 @@ labeling:
         "2025.07.29.18.42_新主楼":
           status: reviewed
           intervals: [[212025, 212648]]
-        "2025.07.29.19.22_新主楼":
-          status: reviewed
-          intervals: [[214396, 215011]]
       dy_L1:
         "2025.07.29.20.04_新主楼":
           status: reviewed

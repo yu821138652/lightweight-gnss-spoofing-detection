@@ -135,7 +135,7 @@ Cn0DbHz_std
 AgcDb
 ReceivedSvTimeUncertaintyNanos
 PseudorangeRateUncertaintyMetersPerSecond
-AccumulatedDeltaRangeUncertaintyMeters
+FreqBand
 ```
 
 其他字段用于排序、分组、标签生成、跨环境/跨设备实验划分和结果分析，不建议直接作为模型输入。
@@ -245,16 +245,20 @@ FreqBand
 
 ## 生成数据清单
 
-数据清单用于记录每个原始 GNSS 日志的环境、场景、设备、文件路径和处理状态。生成命令：
+数据清单用于记录每个原始 GNSS 日志的环境、场景、设备、相对路径、当前 `data_csv` 提取状态和标签审查状态。生成命令：
 
 ```bash
 python scripts/build_data_manifest.py
 ```
 
+**何时运行：** 新增、删除或移动原始 TXT，或变更 `configs/preprocessing.yml` 中的标签审查状态后。
+
+**为什么运行：** 清单从当前 `data_raw/` 和标签配置重建，路径使用相对 `data_raw/` 的形式，不依赖某台电脑的盘符；不要把旧清单当作当前数据状态。
+
 默认会扫描：
 
 ```text
-H:\GNSS\lightweight_gnss_spoofing_detection\data_raw
+data_raw/
 ```
 
 并输出：
@@ -266,12 +270,12 @@ docs/data_manifest.csv
 当前清单统计：
 
 ```text
-raw logs: 133
+raw logs: 132
 playground: 98
-new_building: 35
+new_building: 34
 ```
 
-`label_status` 初始均为 `unreviewed`，后续人工看图确认标签后再更新。
+当前共 132 份原始日志。`label_status` 由 `configs/preprocessing.yml` 解析：当前已配置的会话为 `reviewed`，未配置的新主楼会话会显示为 `needs_review`。
 
 ## CSV 训练准入审计
 
@@ -302,6 +306,10 @@ python scripts/build_csv_session_manifest.py \
   --input-dir data_csv \
   --output-csv docs/data_csv_session_manifest.csv
 ```
+
+**何时运行：** 镜像 CSV 重建、标签配置变更或删除某个原始日志后，并且在构建张量前。
+
+**为什么运行：** 清单从 CSV 内的 `Session`、`LabelStatus`、`LabelSource` 读取元数据，排除 `_by_signal_id` 和 `_by_sv_id` 派生拆分文件；正常但已审查的会话会正确保留为 `reviewed`，不会因正样本数为 0 被误记为 `needs_review`。
 
 当前 CSV 审计结论：
 

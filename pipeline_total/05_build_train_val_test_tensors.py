@@ -620,7 +620,10 @@ def build_tensor_dataset(df, split_name, output_path, identity_column, device_to
             w_labels = w_labels[mask_in_window]
             
             # --- 填充 Tensor ---
-            unique_identities = np.unique(w_identities)
+            # Predict only signals observed at the current, window-end epoch.
+            # Earlier observations remain available as causal history.
+            endpoint_time = window_ts[-1]
+            unique_identities = np.unique(w_identities[w_times == endpoint_time])
             if len(unique_identities) > MAX_SIGNALS:
                 raise ValueError(
                     f"Window contains {len(unique_identities)} {identity_column} values, "
@@ -639,8 +642,10 @@ def build_tensor_dataset(df, split_name, output_path, identity_column, device_to
             for identity_idx, identity in enumerate(unique_identities):
                 identity_mask = (w_identities == identity)
                 
-                # 填 Label (Max)
-                y_vector[identity_idx] = np.max(w_labels[identity_mask])
+                endpoint_identity_mask = identity_mask & (w_times == endpoint_time)
+                # Current-epoch target avoids extending an old positive label
+                # past the end of a spoofing interval.
+                y_vector[identity_idx] = np.max(w_labels[endpoint_identity_mask])
                 mask_vector[identity_idx] = True
                 
                 # 填 Features
@@ -723,7 +728,10 @@ def main():
         
         # 从配置中读取路径
         paths = config.get('paths', {})
-        csv_path = paths.get('processed_csv_path', args.csv)
+        # Reuse the preprocessing output path. ``processed_csv_path`` is kept
+        # for older tensor-specific configs, while ``output_csv`` is the
+        # canonical key in configs/preprocessing.yml.
+        csv_path = args.csv or paths.get('processed_csv_path') or paths.get('output_csv')
         
         # [Fix] 命令行参数优先级最高 (CLI > Config > Default)
         output_dir = args.output_dir or paths.get('output_dir') or 'output/tensor_data'

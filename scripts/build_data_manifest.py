@@ -2,8 +2,8 @@
 """Build a manifest for real-world GNSS spoofing raw logs.
 
 The manifest is a project management table, not a model input. It records
-which raw logs exist, where they are, and whether common intermediate files
-have already been generated.
+which raw logs exist, where they are, and whether their current project CSV
+counterparts have been generated.
 """
 
 from __future__ import annotations
@@ -14,11 +14,14 @@ from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Iterable
 
+import yaml
+
 RAW_PATTERNS = ("gnss_log_*.txt", "log_mimir_*.txt")
 ENVIRONMENTS = ("playground", "new_building")
 SCENARIOS = ("st_L1", "st_L5", "st_L_15", "dy_L1", "dy_L5", "dy_L_15")
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DATA_ROOT = PROJECT_ROOT / "data_raw"
+DEFAULT_DATA_CSV_ROOT = PROJECT_ROOT / "data_csv"
 DEFAULT_OUTPUT = Path(__file__).resolve().parents[1] / "docs" / "data_manifest.csv"
 
 
@@ -30,11 +33,9 @@ class ManifestRow:
     device: str
     sub_path: str
     raw_file: str
-    raw_file_path: str
-    has_raw_csv: str
-    has_raw_sort_csv: str
-    has_plot_features_csv: str
-    has_features_enhanced_csv: str
+    raw_relative_path: str
+    extracted_csv_relative_path: str
+    has_extracted_csv: str
     label_status: str
     label_source: str
     notes: str
@@ -51,11 +52,6 @@ def find_raw_logs(root: Path) -> Iterable[Path]:
             if path.is_file() and path not in seen:
                 seen.add(path)
                 yield path
-
-
-def related_exists(raw_path: Path, suffixes: tuple[str, ...]) -> bool:
-    stem = raw_path.with_suffix("")
-    return any(stem.with_name(stem.name + suffix).exists() for suffix in suffixes)
 
 
 def parse_log_path(data_root: Path, raw_path: Path) -> tuple[str, str, str, str, str]:
@@ -86,11 +82,40 @@ def parse_log_path(data_root: Path, raw_path: Path) -> tuple[str, str, str, str,
     return environment, scenario, session, device, sub_path
 
 
-def build_rows(data_root: Path) -> list[ManifestRow]:
+def resolve_label_metadata(
+    environment: str, scenario: str, session: str, config: dict
+) -> tuple[str, str]:
+    """Mirror preprocessing label provenance without parsing raw samples."""
+    labeling = config.get("labeling", {})
+    session_entry = (
+        labeling.get("session_spoofing_tow_intervals", {})
+        .get(environment, {})
+        .get(scenario, {})
+        .get(session)
+    )
+    if session_entry is not None:
+        if isinstance(session_entry, dict):
+            return session_entry.get("status", "reviewed"), "session_config"
+        return "reviewed", "session_config"
+
+    fallback_environments = set(
+        labeling.get("scenario_fallback_environments", ["playground"])
+    )
+    if environment in fallback_environments:
+        return "reviewed", "scenario_fallback"
+    return "needs_review", "missing_session_config"
+
+
+def build_rows(data_root: Path, data_csv_root: Path, config: dict) -> list[ManifestRow]:
     rows: list[ManifestRow] = []
 
     for raw_path in sorted(find_raw_logs(data_root), key=lambda p: str(p).lower()):
         environment, scenario, session, device, sub_path = parse_log_path(data_root, raw_path)
+        raw_relative_path = raw_path.relative_to(data_root)
+        extracted_csv_path = (data_csv_root / raw_relative_path).with_suffix(".csv")
+        label_status, label_source = resolve_label_metadata(
+            environment, scenario, session, config
+        )
         rows.append(
             ManifestRow(
                 environment=environment,
@@ -99,13 +124,15 @@ def build_rows(data_root: Path) -> list[ManifestRow]:
                 device=device,
                 sub_path=sub_path,
                 raw_file=raw_path.name,
-                raw_file_path=str(raw_path),
-                has_raw_csv=yes_no(related_exists(raw_path, ("-raw.csv",))),
-                has_raw_sort_csv=yes_no(related_exists(raw_path, ("-raw_sort3.csv", "-raw_sort.csv"))),
-                has_plot_features_csv=yes_no(related_exists(raw_path, ("-plot_features.csv",))),
-                has_features_enhanced_csv=yes_no(related_exists(raw_path, ("-features_enhanced.csv",))),
-                label_status="unreviewed",
-                label_source="",
+                raw_relative_path=raw_relative_path.as_posix(),
+                extracted_csv_relative_path=(
+                    raw_relative_path.with_suffix(".csv").as_posix()
+                    if extracted_csv_path.is_file()
+                    else ""
+                ),
+                has_extracted_csv=yes_no(extracted_csv_path.is_file()),
+                label_status=label_status,
+                label_source=label_source,
                 notes="",
             )
         )
@@ -128,13 +155,13 @@ def print_summary(rows: list[ManifestRow]) -> None:
 
     by_env: dict[str, int] = {}
     by_scenario: dict[tuple[str, str], int] = {}
-    missing_plot = 0
+    missing_extracted_csv = 0
     for row in rows:
         by_env[row.environment] = by_env.get(row.environment, 0) + 1
         key = (row.environment, row.scenario)
         by_scenario[key] = by_scenario.get(key, 0) + 1
-        if row.has_plot_features_csv == "no":
-            missing_plot += 1
+        if row.has_extracted_csv == "no":
+            missing_extracted_csv += 1
 
     print("By environment:")
     for env, count in sorted(by_env.items()):
@@ -144,20 +171,36 @@ def print_summary(rows: list[ManifestRow]) -> None:
     for (env, scenario), count in sorted(by_scenario.items()):
         print(f"  {env}/{scenario}: {count}")
 
-    print(f"Missing plot feature CSV: {missing_plot}")
+    print(f"Missing extracted CSV: {missing_extracted_csv}")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Build data_manifest.csv for GNSS spoofing raw logs.")
     parser.add_argument("--data-root", type=Path, default=DEFAULT_DATA_ROOT, help="Path to data_raw containing playground/new_building.")
+    parser.add_argument(
+        "--data-csv-root",
+        type=Path,
+        default=DEFAULT_DATA_CSV_ROOT,
+        help="Path to current extracted CSV files mirroring data_raw.",
+    )
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT, help="Output manifest CSV path.")
+    parser.add_argument(
+        "--config",
+        type=Path,
+        default=PROJECT_ROOT / "configs" / "preprocessing.yml",
+        help="Preprocessing YAML used to resolve label review status.",
+    )
     args = parser.parse_args()
 
     data_root = args.data_root.resolve()
     if not data_root.exists():
         raise FileNotFoundError(f"data root not found: {data_root}")
+    data_csv_root = args.data_csv_root.resolve()
 
-    rows = build_rows(data_root)
+    with args.config.open("r", encoding="utf-8") as handle:
+        config = yaml.safe_load(handle) or {}
+
+    rows = build_rows(data_root, data_csv_root, config)
     write_manifest(rows, args.output.resolve())
     print(f"Wrote manifest: {args.output.resolve()}")
     print_summary(rows)

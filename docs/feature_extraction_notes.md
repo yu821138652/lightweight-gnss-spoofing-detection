@@ -23,11 +23,11 @@ dy_L5
 dy_L_15
 ```
 
-当前 `docs/data_manifest.csv` 记录了 133 个原始 GNSS txt 日志：
+当前 `docs/data_manifest.csv` 记录了 132 个原始 GNSS txt 日志：
 
 ```text
 playground: 98
-new_building: 35
+new_building: 34
 ```
 
 ## 本次新增和修改内容
@@ -47,7 +47,7 @@ new_building: 35
 
 - 默认扫描当前仓库下的 `data_raw`；
 - 支持 `data_raw/playground/...` 和 `data_raw/new_building/...` 两种环境结构；
-- 输出 `docs/data_manifest.csv`。
+- 输出 `docs/data_manifest.csv`，使用相对路径记录当前 `data_csv` 提取状态和标签审查来源。
 
 ### `scripts/build_mirrored_data_csv.py`
 
@@ -182,8 +182,8 @@ python pipeline_total/04_build_labeled_processed_csv.py --mode full --config con
 最近一次全量镜像导出结果为：
 
 ```text
-原始 txt 日志数量: 133
-镜像 CSV 文件数量: 133
+原始 txt 日志数量: 132
+镜像 CSV 文件数量: 132
 总行数: 3,175,866
 输出目录: data_csv/
 ```
@@ -192,7 +192,7 @@ python pipeline_total/04_build_labeled_processed_csv.py --mode full --config con
 
 ```text
 playground: 98
-new_building: 35
+new_building: 34
 ```
 
 ## 不应提交到 Git 的内容
