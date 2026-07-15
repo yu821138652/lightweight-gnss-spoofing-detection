@@ -192,39 +192,51 @@ python pipeline_total/05_build_train_val_test_tensors.py --csv output/processed_
 常用命令：
 
 ```bash
-python pipeline_total/06_verify_tensor_splits.py --npz_dir output/tensors_mixed --csv output/processed_gnss_data.csv
+python pipeline_total/06_verify_tensor_splits.py --npz_dir output/tensors_mixed
 ```
 
 ## 07_train_models.py
 
 来源：`pipeline/03_train.py`
 
-作用：训练模型。
+作用：训练项目自有的逐信号轻量 baseline。每条有效 `signal_id` 的 5 秒、7 特征窗口独立输出正常/欺骗 logits；同一设备窗口中的填充槽位会由 `mask` 排除。
+
+首轮可选模型：
+
+```text
+signal_mlp：5 秒 x 7 特征直接展平，作为最低复杂度参考
+signal_gru：保留 5 秒时间顺序的轻量 GRU，作为时序参考
+```
+
+先在未训练状态做干运行。此命令只读取 train/val，并验证形状、掩码与前向传播，不更新权重、不生成 checkpoint、也不读取 test：
+
+```bash
+C:\Users\Asus\AppData\Local\Microsoft\WindowsApps\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\python.exe pipeline_total/07_train_models.py --data-dir output/tensors_mixed --model signal_mlp --dry-run
+```
+
+模型结构和超参数确定后，才运行正式训练。训练过程只使用 train，依据 val 的 Macro-F1 早停并保存最佳权重：
 
 常用命令：
 
 ```bash
-python pipeline_total/07_train_models.py --data_dir output/tensors_mixed --model st_mamba --epochs 100
+C:\Users\Asus\AppData\Local\Microsoft\WindowsApps\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\python.exe pipeline_total/07_train_models.py --data-dir output/tensors_mixed --output-dir output/training/signal_mlp --model signal_mlp --epochs 30
 ```
 
-支持模型包括：
+只有在模型和超参数均已锁定后，才显式读取 test 并记录最终指标：
 
-```text
-lstm
-mamba
-st_mamba
-st_mamba_gated
-st_mamba_core_residual
-st_mamba_adaptive_core_residual
-transformer
-cnn
+```bash
+C:\Users\Asus\AppData\Local\Microsoft\WindowsApps\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\python.exe pipeline_total/07_train_models.py --data-dir output/tensors_mixed --output-dir output/training/signal_mlp --model signal_mlp --test-only
 ```
+
+张量接口、模型扩展方式、测试集使用边界和 TSLib 适配原则见 `docs/model_training_framework.md`。
 
 ## 08_inference.py
 
 来源：`pipeline/04_inference.py`
 
-作用：加载训练好的模型，对 CSV 做推理并输出预测结果。
+作用：历史模型接口的 CSV 推理脚本。
+
+**当前状态：** 该脚本尚未适配 `signal_mlp / signal_gru` checkpoint，不可用于本次新 baseline。原因是新模型输出逐信号概率，而部署推理还需先在验证集确定多信号设备级报警聚合规则。完成 baseline 选择与报警规则设计后，再单独适配该脚本。
 
 示例：
 

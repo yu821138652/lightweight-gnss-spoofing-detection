@@ -371,6 +371,7 @@ TTD 检测时间评估
 - `docs/data_inventory.md`：数据来源与使用策略
 - `docs/experiment_plan.md`：实验矩阵与评价指标
 - `docs/dynamic_labeling_assistant.md`：动态场景短时欺骗候选区间的生成与人工复核
+- `docs/model_training_framework.md`：张量接口、轻量 baseline、训练测试边界与模型扩展规范
 - `pipeline_total/README.md`：全流程脚本顺序说明
 
 ## 当前原则
