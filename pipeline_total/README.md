@@ -300,3 +300,22 @@ validation_misclassifications_<model>_by_tow.csv
 ```
 
 输出目录中包含每台设备的 PNG 复核图和 `device_epoch_prediction_summary.csv`，后者保留了绘图前的设备级概率与特征统计，便于进一步筛选 TOW 区间。
+
+## 11_evaluate_device_aggregation.py
+
+来源：`pipeline_total/11_evaluate_device_aggregation.py`
+
+**何时运行：** 已完成逐信号模型训练，需要确认“少数卫星误报或漏报”是否会转化为实际设备报警错误时。
+
+**为什么运行：** 将同一设备当前历元的全部有效信号聚合为一个设备标签。脚本先检查这一组信号的真实标签是否一致，再计算设备级 Accuracy、Macro-F1、Precision、Recall 和 FAR；默认多数投票，即只有预测为欺骗的信号数超过有效信号的一半时才报警。它只读取 validation 数据。
+
+```powershell
+& $PY pipeline_total\11_evaluate_device_aggregation.py `
+  --data-dir output\tensors_static_cross_env `
+  --csv output\processed_gnss_data.csv `
+  --model-dir output\training\signal_lstm_static_cross_env `
+  --model signal_lstm `
+  --rule majority
+```
+
+多数投票是首个部署聚合基线，并非最终规则。后续可以只在 validation 集比较 `any`、`k_of_n` 和 `ratio` 规则，再锁定规则后进行正式测试。不能只看 Accuracy，仍须同时检查攻击 Recall、FAR 和后续的检测时延。
