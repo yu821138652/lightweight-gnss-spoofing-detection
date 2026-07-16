@@ -1,9 +1,10 @@
 """Evaluate device-level alarms by aggregating validation signal predictions.
 
 This script converts per-signal predictions at one current epoch into one
-device alarm. It verifies that all valid signals in a device epoch share the
-same ground-truth label before reporting device-level metrics. It defaults to
-the validation split and does not read test.npz.
+device alarm. For a single-band spoofing experiment, signals in unaffected
+bands correctly retain label 0. Therefore device truth is positive when any
+valid signal at the current epoch has true label 1. It defaults to validation
+and does not read test.npz.
 """
 
 from __future__ import annotations
@@ -76,17 +77,19 @@ def aggregate_device_predictions(frame: pd.DataFrame, rule: str, min_positive_si
             true_label=("true_label", "max"),
             label_value_count=("true_label", "nunique"),
             valid_signal_count=("signal_id", "size"),
+            true_positive_signal_count=("true_label", "sum"),
             predicted_positive_signal_count=("predicted_signal_label", "sum"),
             mean_spoofing_probability=("spoofing_probability", "mean"),
             max_spoofing_probability=("spoofing_probability", "max"),
         )
         .reset_index()
     )
-    conflicts = grouped.loc[grouped["label_value_count"] != 1]
-    if not conflicts.empty:
-        preview = conflicts.head(5)[group_columns + ["label_value_count"]].to_dict("records")
-        raise RuntimeError(f"Inconsistent ground-truth labels within device epochs: {preview}")
-
+    # A mixed true label is expected for st_L1/st_L5 attacks: unaffected bands
+    # remain normal while the device is still in a spoofing event.
+    grouped["mixed_signal_truth"] = (grouped["label_value_count"] > 1).astype(int)
+    grouped["true_positive_signal_ratio"] = (
+        grouped["true_positive_signal_count"] / grouped["valid_signal_count"]
+    )
     grouped["predicted_positive_ratio"] = grouped["predicted_positive_signal_count"] / grouped["valid_signal_count"]
     if rule == "majority":
         grouped["device_predicted_label"] = (
@@ -114,6 +117,8 @@ def compute_metrics(device_epochs: pd.DataFrame) -> dict[str, float | int]:
         "false_positive": int(fp),
         "false_negative": int(fn),
         "true_positive": int(tp),
+        "mixed_signal_truth_device_epochs": int(device_epochs["mixed_signal_truth"].sum()),
+        "device_truth_rule": "any_true_positive_signal",
         "accuracy": float(accuracy_score(y_true, y_pred)),
         "macro_f1": float(f1_score(y_true, y_pred, average="macro", zero_division=0)),
         "precision": float(precision_score(y_true, y_pred, zero_division=0)),

@@ -307,7 +307,7 @@ validation_misclassifications_<model>_by_tow.csv
 
 **何时运行：** 已完成逐信号模型训练，需要确认“少数卫星误报或漏报”是否会转化为实际设备报警错误时。
 
-**为什么运行：** 将同一设备当前历元的全部有效信号聚合为一个设备标签。脚本先检查这一组信号的真实标签是否一致，再计算设备级 Accuracy、Macro-F1、Precision、Recall 和 FAR；默认多数投票，即只有预测为欺骗的信号数超过有效信号的一半时才报警。它只读取 validation 数据。
+**为什么运行：** 将同一设备当前历元的全部有效信号聚合为一个设备告警。对于 `st_L1` 或 `st_L5` 单频欺骗，未受攻击频段的信号应保持真实标签 0，因此同一设备历元的逐信号真值出现 0/1 混合是预期现象；设备级真值定义为“任一有效信号真实标签为 1”，并在输出中记录混合标签设备历元数量。脚本再计算设备级 Accuracy、Macro-F1、Precision、Recall 和 FAR；默认多数投票，即只有预测为欺骗的信号数超过有效信号的一半时才报警。它只读取 validation 数据。
 
 ```powershell
 & $PY pipeline_total\11_evaluate_device_aggregation.py `
