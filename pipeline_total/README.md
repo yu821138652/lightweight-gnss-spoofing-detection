@@ -245,3 +245,32 @@ C:\Users\Asus\AppData\Local\Microsoft\WindowsApps\PythonSoftwareFoundation.Pytho
 ```bash
 python pipeline_total/08_inference.py --model_path output/best_model.pth --csv your_data.csv --output_csv predictions.csv
 ```
+
+## 09_export_validation_misclassifications.py
+
+来源：`pipeline_total/09_export_validation_misclassifications.py`
+
+**何时运行：** 当前开发协议下，某个模型完成训练并保存最佳 validation checkpoint 后，且在修改特征、窗口长度、划分或开始任何 test 评估之前。
+
+**为什么运行：** 导出 validation 集的逐信号错分样本，优先检查错分是否集中在少数 Session、设备、TOW 区间或某类信号。脚本会依据锁定的 `recording_split_manifest.csv` 重建窗口与信号槽位，并严格核对重建的 `mask` 和 `Label` 是否与 `val.npz` 一致；不一致时会拒绝生成 CSV，防止预测结果与原始数据行错位。该脚本不会读取 `test.npz`。
+
+当前 Tiny Transformer 的示例：
+
+```powershell
+$PY = "C:\Users\Asus\AppData\Local\Microsoft\WindowsApps\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\python.exe"
+
+& $PY pipeline_total\09_export_validation_misclassifications.py `
+  --data-dir output\tensors_mixed `
+  --csv output\processed_gnss_data.csv `
+  --model-dir output\training\signal_transformer_tiny_current_protocol `
+  --model signal_transformer_tiny
+```
+
+输出写入对应模型目录：
+
+```text
+validation_misclassifications_<model>.csv
+validation_misclassifications_<model>_summary.csv
+```
+
+主 CSV 仅包含 false positive 和 false negative，字段包括窗口起止时间、当前 TOW、录制环境、Session、设备、来源日志、`signal_id`、真实/预测标签、欺骗概率及 7 项当前历元特征。
