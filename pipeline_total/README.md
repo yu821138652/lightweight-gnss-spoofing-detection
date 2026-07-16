@@ -280,3 +280,23 @@ validation_misclassifications_<model>_by_tow.csv
 主 CSV 仅包含 false positive 和 false negative，字段包括窗口起止时间、当前 TOW、录制环境、Session、设备、来源日志、`signal_id`、真实/预测标签、欺骗概率及 7 项当前历元特征。
 
 四个汇总 CSV 分别用于定位错误集中在哪个录制单元、哪个设备源日志、哪个信号频段、哪个当前 TOW。它们基于完整 validation 预测计算 TP、TN、FP、FN、Recall、漏检率、FAR 与总体错误率，不能只按错分主 CSV 的行数推断比例。
+
+## 10_plot_validation_error_review.py
+
+来源：`pipeline_total/10_plot_validation_error_review.py`
+
+**何时运行：** `09_export_validation_misclassifications.py` 已定位到某个高漏检 validation Session 后。
+
+**为什么运行：** 将该录制中每台设备的真实欺骗标签、多信号预测概率聚合、C/N0 分位数和 AGC/C/N0 变化率放在同一张图中，判断漏检是否只出现在标签边界，或是否贯穿欺骗区间内部。脚本仍只读取 validation 数据。
+
+```powershell
+& $PY pipeline_total\10_plot_validation_error_review.py `
+  --data-dir output\tensors_mixed `
+  --csv output\processed_gnss_data.csv `
+  --model-dir output\training\signal_transformer_tiny_current_protocol `
+  --model signal_transformer_tiny `
+  --scenario dy_L_15 `
+  --session "2025.07.30.08.26_2025.07.30.08.32（动态L1+L5）"
+```
+
+输出目录中包含每台设备的 PNG 复核图和 `device_epoch_prediction_summary.csv`，后者保留了绘图前的设备级概率与特征统计，便于进一步筛选 TOW 区间。
