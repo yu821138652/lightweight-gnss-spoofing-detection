@@ -24,7 +24,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from models import SignalGRU, SignalMLP
+from models import SignalGRU, SignalLSTM, SignalMLP, SignalTCN, SignalTransformerTiny
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - [%(levelname)s] - %(message)s")
@@ -69,6 +69,12 @@ def build_model(name: str, input_dim: int, time_steps: int, hidden_dim: int, dro
         return SignalMLP(input_dim=input_dim, time_steps=time_steps, hidden_dim=hidden_dim, dropout=dropout)
     if name == "signal_gru":
         return SignalGRU(input_dim=input_dim, hidden_dim=hidden_dim, dropout=dropout)
+    if name == "signal_tcn":
+        return SignalTCN(input_dim=input_dim, hidden_dim=hidden_dim, dropout=dropout)
+    if name == "signal_lstm":
+        return SignalLSTM(input_dim=input_dim, hidden_dim=hidden_dim, dropout=dropout)
+    if name == "signal_transformer_tiny":
+        return SignalTransformerTiny(input_dim=input_dim, time_steps=time_steps, hidden_dim=hidden_dim, dropout=dropout)
     raise ValueError(f"Unknown model: {name}")
 
 
@@ -114,7 +120,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-dir", type=Path, default=PROJECT_ROOT / "output" / "tensors_mixed", help="Directory containing train.npz and val.npz.")
     parser.add_argument("--output-dir", type=Path, default=PROJECT_ROOT / "output" / "training", help="Where checkpoints and validation metrics are written.")
-    parser.add_argument("--model", choices=["signal_mlp", "signal_gru"], default="signal_mlp", help="Lightweight per-signal baseline to train.")
+    parser.add_argument(
+        "--model",
+        choices=["signal_mlp", "signal_gru", "signal_tcn", "signal_lstm", "signal_transformer_tiny"],
+        default="signal_mlp",
+        help="Lightweight per-signal baseline to train.",
+    )
     parser.add_argument("--epochs", type=int, default=30, help="Maximum training epochs. Validation macro-F1 controls early stopping.")
     parser.add_argument("--batch-size", type=int, default=256, help="Number of GNSS windows per batch.")
     parser.add_argument("--lr", type=float, default=1e-3, help="AdamW learning rate.")
