@@ -271,6 +271,12 @@ $PY = "C:\Users\Asus\AppData\Local\Microsoft\WindowsApps\PythonSoftwareFoundatio
 ```text
 validation_misclassifications_<model>.csv
 validation_misclassifications_<model>_summary.csv
+validation_misclassifications_<model>_by_recording.csv
+validation_misclassifications_<model>_by_source_log.csv
+validation_misclassifications_<model>_by_signal_band.csv
+validation_misclassifications_<model>_by_tow.csv
 ```
 
 主 CSV 仅包含 false positive 和 false negative，字段包括窗口起止时间、当前 TOW、录制环境、Session、设备、来源日志、`signal_id`、真实/预测标签、欺骗概率及 7 项当前历元特征。
+
+四个汇总 CSV 分别用于定位错误集中在哪个录制单元、哪个设备源日志、哪个信号频段、哪个当前 TOW。它们基于完整 validation 预测计算 TP、TN、FP、FN、Recall、漏检率、FAR 与总体错误率，不能只按错分主 CSV 的行数推断比例。

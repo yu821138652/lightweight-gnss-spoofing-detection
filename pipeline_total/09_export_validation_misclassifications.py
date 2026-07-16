@@ -182,6 +182,29 @@ def predict_validation(training_module, checkpoint_path: Path, npz_path: Path, b
     return checkpoint, np.concatenate(probabilities), np.concatenate(predictions), dataset
 
 
+def build_error_breakdown(frame: pd.DataFrame, group_columns: list[str]) -> pd.DataFrame:
+    """Summarize signal-level confusion counts and rates for one review dimension."""
+    grouped = (
+        frame.groupby(group_columns, dropna=False)
+        .agg(
+            valid_signal_count=("true_label", "size"),
+            positive_count=("true_label", "sum"),
+            predicted_positive_count=("predicted_label", "sum"),
+            true_positive=("is_true_positive", "sum"),
+            true_negative=("is_true_negative", "sum"),
+            false_positive=("is_false_positive", "sum"),
+            false_negative=("is_false_negative", "sum"),
+        )
+        .reset_index()
+    )
+    grouped["negative_count"] = grouped["valid_signal_count"] - grouped["positive_count"]
+    grouped["recall"] = grouped["true_positive"] / grouped["positive_count"].replace(0, np.nan)
+    grouped["miss_rate"] = grouped["false_negative"] / grouped["positive_count"].replace(0, np.nan)
+    grouped["far"] = grouped["false_positive"] / grouped["negative_count"].replace(0, np.nan)
+    grouped["error_rate"] = (grouped["false_positive"] + grouped["false_negative"]) / grouped["valid_signal_count"]
+    return grouped.sort_values(["false_negative", "false_positive"], ascending=False, kind="mergesort")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-dir", type=Path, default=PROJECT_ROOT / "output" / "tensors_mixed")
@@ -221,8 +244,12 @@ def main() -> None:
 
     metadata["predicted_label"] = predicted_labels.astype(int)
     metadata["spoofing_probability"] = probabilities
+    metadata["is_true_positive"] = ((metadata["true_label"] == 1) & (metadata["predicted_label"] == 1)).astype(int)
+    metadata["is_true_negative"] = ((metadata["true_label"] == 0) & (metadata["predicted_label"] == 0)).astype(int)
+    metadata["is_false_positive"] = ((metadata["true_label"] == 0) & (metadata["predicted_label"] == 1)).astype(int)
+    metadata["is_false_negative"] = ((metadata["true_label"] == 1) & (metadata["predicted_label"] == 0)).astype(int)
     metadata["error_type"] = np.where(
-        (metadata["true_label"] == 1) & (metadata["predicted_label"] == 0),
+        metadata["is_false_negative"].astype(bool),
         "false_negative",
         "false_positive",
     )
@@ -242,7 +269,48 @@ def main() -> None:
     )
     summary_path = output_csv.with_name(f"{output_csv.stem}_summary.csv")
     summary.to_csv(summary_path, index=False, encoding="utf-8-sig")
-    print(json.dumps({"output_csv": str(output_csv), "summary_csv": str(summary_path), **dict(summary.values)}, ensure_ascii=False))
+    recording_columns = [column for column in ["Environment", "Scenario", "Session"] if column in metadata.columns]
+    recording_breakdown = build_error_breakdown(metadata, recording_columns)
+    recording_path = output_csv.with_name(f"{output_csv.stem}_by_recording.csv")
+    recording_breakdown.to_csv(recording_path, index=False, encoding="utf-8-sig")
+
+    source_columns = [
+        column
+        for column in ["Environment", "Scenario", "Session", "DeviceName", "SourceRelativePath"]
+        if column in metadata.columns
+    ]
+    source_breakdown = build_error_breakdown(metadata, source_columns)
+    source_path = output_csv.with_name(f"{output_csv.stem}_by_source_log.csv")
+    source_breakdown.to_csv(source_path, index=False, encoding="utf-8-sig")
+
+    band_columns = [column for column in ["Scenario", "SignalBand"] if column in metadata.columns]
+    band_breakdown = build_error_breakdown(metadata, band_columns)
+    band_path = output_csv.with_name(f"{output_csv.stem}_by_signal_band.csv")
+    band_breakdown.to_csv(band_path, index=False, encoding="utf-8-sig")
+
+    metadata["endpoint_TOW_second"] = pd.to_numeric(metadata["endpoint_TOW"], errors="coerce").round().astype("Int64")
+    tow_columns = [
+        column
+        for column in ["Environment", "Scenario", "Session", "DeviceName", "endpoint_TOW_second"]
+        if column in metadata.columns
+    ]
+    tow_breakdown = build_error_breakdown(metadata, tow_columns)
+    tow_path = output_csv.with_name(f"{output_csv.stem}_by_tow.csv")
+    tow_breakdown.to_csv(tow_path, index=False, encoding="utf-8-sig")
+    print(
+        json.dumps(
+            {
+                "output_csv": str(output_csv),
+                "summary_csv": str(summary_path),
+                "recording_breakdown_csv": str(recording_path),
+                "source_log_breakdown_csv": str(source_path),
+                "signal_band_breakdown_csv": str(band_path),
+                "tow_breakdown_csv": str(tow_path),
+                **dict(summary.values),
+            },
+            ensure_ascii=False,
+        )
+    )
 
 
 if __name__ == "__main__":
