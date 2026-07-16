@@ -55,15 +55,17 @@ def prepare_validation_frame(csv_path: Path, manifest_path: Path, tensor_builder
     if missing_manifest_columns:
         raise ValueError(f"Split manifest is missing columns: {sorted(missing_manifest_columns)}")
     join_columns = ["Environment", "Scenario", "Session"]
+    # A tensor directory can intentionally contain only a protocol subset
+    # (for example static cross-environment recordings). The manifest is the
+    # authoritative scope for reconstruction.
     frame = frame.merge(
         manifest[["recording_id", *join_columns, "split"]],
         on=join_columns,
-        how="left",
+        how="inner",
         validate="many_to_one",
     )
-    if frame["split"].isna().any():
-        examples = frame.loc[frame["split"].isna(), join_columns].drop_duplicates().head(5)
-        raise ValueError(f"Rows are absent from the locked split manifest: {examples.to_dict('records')}")
+    if frame.empty:
+        raise ValueError("No processed CSV rows match the locked split manifest.")
 
     if "SourceRelativePath" in frame.columns and frame["SourceRelativePath"].notna().all():
         sequence_source = frame["SourceRelativePath"].astype(str)
@@ -84,12 +86,9 @@ def reconstruct_validation_metadata(frame: pd.DataFrame, identity_column: str, f
         "Session",
         "DeviceName",
         "SourceRelativePath",
-        "SourceFile",
         "TOW",
         "utcTimeMillis",
         "SpoofingType",
-        "LabelStatus",
-        "LabelSource",
         "SignalBand",
         "ConstellationType",
         "Svid",
@@ -131,7 +130,6 @@ def reconstruct_validation_metadata(frame: pd.DataFrame, identity_column: str, f
                 labels[signal_slot] = int(row["Label"])
                 record = {
                     "sample_index": sample_index,
-                    "signal_slot": signal_slot,
                     "window_start_TimeNanos": int(window_times[0]),
                     "endpoint_TimeNanos": int(endpoint_time),
                     "window_start_TOW": time_to_tow.get(window_times[0]),
