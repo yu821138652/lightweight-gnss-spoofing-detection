@@ -18,6 +18,17 @@
 
 信号级数据规范、验证结果和常用命令见 `docs/signal_level_feature_extraction.md`。
 
+## 当前建模状态与结果边界
+
+本流程已从“逐卫星分类”扩展为“直接设备级告警”。当前设备级模型使用同一设备、同一历元的 27 维多卫星统计特征，并支持 5/15/30/64 历元因果窗口。
+
+- 当前性能强基线是 `DeviceLightGBM L=30`；
+- 当前轻量神经网络候选是 `DeviceStatsDLinear L=30`；
+- 当前低虚警对照是 `DeviceStatsMLP L=5`；
+- 完整开发参考结果、模型淘汰理由和下一阶段任务见 [`../docs/experiment_progress.md`](../docs/experiment_progress.md)。
+
+**结果边界：** `output/tensors_static_cross_env` 的 test 已参与模型和窗口诊断，不再是最终独立测试。新一轮特征和模型开发必须使用 `../docs/protocols/static_session_cv_4fold/` 的锁定清单；操作规则见 [`../docs/static_session_cv_protocol.md`](../docs/static_session_cv_protocol.md)。
+
 ## 00_preprocessing_config.yml
 
 来源：`configs/preprocessing_template.yml`。完成新主楼标签配置后，复制为
@@ -366,6 +377,16 @@ val_misclassifications_<model>_by_tow.csv
   --seed 2026
 ```
 
+当且仅当模型结构、窗口、特征和阈值方案锁定后，才读取对应目录的 test：
+
+```powershell
+& $PY pipeline_total\14_train_device_models.py `
+  --data-dir output\device_tensors_static_cross_env_l30 `
+  --output-dir output\training\device_stats_dlinear_static_cross_env_l30 `
+  --model device_stats_dlinear `
+  --test-only
+```
+
 ## 15_train_device_lightgbm.py
 
 来源：`pipeline_total/15_train_device_lightgbm.py`
@@ -381,6 +402,20 @@ val_misclassifications_<model>_by_tow.csv
   --data-dir output\device_tensors_static_cross_env_l15 `
   --output-dir output\training\device_lightgbm_static_cross_env_l15 `
   --dry-run
+```
+
+正式训练与已锁定模型的 test 评估示例：
+
+```powershell
+& $PY pipeline_total\15_train_device_lightgbm.py `
+  --data-dir output\device_tensors_static_cross_env_l30 `
+  --output-dir output\training\device_lightgbm_static_cross_env_l30 `
+  --seed 2026
+
+& $PY pipeline_total\15_train_device_lightgbm.py `
+  --data-dir output\device_tensors_static_cross_env_l30 `
+  --output-dir output\training\device_lightgbm_static_cross_env_l30 `
+  --test-only
 ```
 
 ## 16_collect_device_experiment_results.py
