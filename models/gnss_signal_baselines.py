@@ -18,6 +18,20 @@ class CausalConv1d(nn.Module):
         return self.conv(nn.functional.pad(x, (self.left_padding, 0)))
 
 
+class CausalDepthwiseConv1d(nn.Module):
+    """Causal depthwise temporal convolution for efficient edge models."""
+
+    def __init__(self, channels: int, kernel_size: int, dilation: int = 1):
+        super().__init__()
+        self.left_padding = dilation * (kernel_size - 1)
+        self.conv = nn.Conv1d(
+            channels, channels, kernel_size, dilation=dilation, groups=channels
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.conv(nn.functional.pad(x, (self.left_padding, 0)))
+
+
 class SignalMLP(nn.Module):
     """Classify each signal by flattening its short causal feature window."""
 
@@ -250,3 +264,87 @@ class DeviceStatsTCN(nn.Module):
             raise ValueError(f"Expected [batch, time, {self.input_dim}], got {tuple(x.shape)}")
         encoded = self.encoder(x.transpose(1, 2))
         return self.classifier(encoded[:, :, -1])
+
+
+class DeviceStatsDepthwiseCNN(nn.Module):
+    """Depthwise-separable causal CNN for direct edge-device alarms."""
+
+    def __init__(self, input_dim: int, hidden_dim: int = 24, dropout: float = 0.1):
+        super().__init__()
+        self.input_dim = input_dim
+        self.stem = nn.Conv1d(input_dim, hidden_dim, kernel_size=1)
+        self.depthwise_short = CausalDepthwiseConv1d(hidden_dim, kernel_size=3)
+        self.depthwise_long = CausalDepthwiseConv1d(hidden_dim, kernel_size=3, dilation=2)
+        self.pointwise = nn.Conv1d(hidden_dim, hidden_dim, kernel_size=1)
+        self.classifier = nn.Sequential(
+            nn.LayerNorm(hidden_dim),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, 2),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if x.ndim != 3 or x.shape[-1] != self.input_dim:
+            raise ValueError(f"Expected [batch, time, {self.input_dim}], got {tuple(x.shape)}")
+        encoded = self.stem(x.transpose(1, 2))
+        encoded = encoded + self.depthwise_short(encoded)
+        encoded = nn.functional.gelu(encoded)
+        encoded = encoded + self.depthwise_long(encoded)
+        encoded = nn.functional.gelu(self.pointwise(encoded))
+        return self.classifier(encoded[:, :, -1])
+
+
+class DeviceStatsNLinear(nn.Module):
+    """NLinear-inspired classifier using deviations from the current baseline."""
+
+    def __init__(self, input_dim: int, time_steps: int, hidden_dim: int = 24, dropout: float = 0.1):
+        super().__init__()
+        self.input_dim = input_dim
+        self.time_steps = time_steps
+        self.time_projection = nn.Linear(time_steps, 1)
+        self.classifier = nn.Sequential(
+            nn.LayerNorm(input_dim),
+            nn.Linear(input_dim, hidden_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, 2),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if x.ndim != 3 or tuple(x.shape[-2:]) != (self.time_steps, self.input_dim):
+            raise ValueError(f"Expected [batch, {self.time_steps}, {self.input_dim}], got {tuple(x.shape)}")
+        deviations = x - x[:, -1:, :].detach()
+        compressed = self.time_projection(deviations.transpose(1, 2)).squeeze(-1)
+        return self.classifier(compressed)
+
+
+class DeviceStatsDLinear(nn.Module):
+    """DLinear-inspired classifier with explicit trend and residual projections."""
+
+    def __init__(self, input_dim: int, time_steps: int, hidden_dim: int = 24, dropout: float = 0.1):
+        super().__init__()
+        self.input_dim = input_dim
+        self.time_steps = time_steps
+        self.kernel_size = min(5, time_steps if time_steps % 2 else time_steps - 1)
+        self.seasonal_projection = nn.Linear(time_steps, 1)
+        self.trend_projection = nn.Linear(time_steps, 1)
+        self.classifier = nn.Sequential(
+            nn.LayerNorm(input_dim * 2),
+            nn.Linear(input_dim * 2, hidden_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, 2),
+        )
+
+    def moving_average(self, x: torch.Tensor) -> torch.Tensor:
+        padding = (self.kernel_size - 1) // 2
+        padded = nn.functional.pad(x.transpose(1, 2), (padding, padding), mode="replicate")
+        return nn.functional.avg_pool1d(padded, kernel_size=self.kernel_size, stride=1).transpose(1, 2)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if x.ndim != 3 or tuple(x.shape[-2:]) != (self.time_steps, self.input_dim):
+            raise ValueError(f"Expected [batch, {self.time_steps}, {self.input_dim}], got {tuple(x.shape)}")
+        trend = self.moving_average(x)
+        seasonal = x - trend
+        trend_features = self.trend_projection(trend.transpose(1, 2)).squeeze(-1)
+        seasonal_features = self.seasonal_projection(seasonal.transpose(1, 2)).squeeze(-1)
+        return self.classifier(torch.cat([trend_features, seasonal_features], dim=-1))

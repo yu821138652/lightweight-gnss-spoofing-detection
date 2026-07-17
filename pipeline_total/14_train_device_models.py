@@ -21,7 +21,15 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from models import DeviceStatsGRU, DeviceStatsLSTM, DeviceStatsMLP, DeviceStatsTCN
+from models import (
+    DeviceStatsDLinear,
+    DeviceStatsDepthwiseCNN,
+    DeviceStatsGRU,
+    DeviceStatsLSTM,
+    DeviceStatsMLP,
+    DeviceStatsNLinear,
+    DeviceStatsTCN,
+)
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - [%(levelname)s] - %(message)s")
@@ -67,6 +75,12 @@ def build_model(name: str, input_dim: int, time_steps: int, hidden_dim: int, dro
         return DeviceStatsLSTM(input_dim=input_dim, hidden_dim=hidden_dim, dropout=dropout)
     if name == "device_stats_tcn":
         return DeviceStatsTCN(input_dim=input_dim, hidden_dim=hidden_dim, dropout=dropout)
+    if name == "device_stats_depthwise_cnn":
+        return DeviceStatsDepthwiseCNN(input_dim=input_dim, hidden_dim=hidden_dim, dropout=dropout)
+    if name == "device_stats_nlinear":
+        return DeviceStatsNLinear(input_dim=input_dim, time_steps=time_steps, hidden_dim=hidden_dim, dropout=dropout)
+    if name == "device_stats_dlinear":
+        return DeviceStatsDLinear(input_dim=input_dim, time_steps=time_steps, hidden_dim=hidden_dim, dropout=dropout)
     raise ValueError(f"Unknown model: {name}")
 
 
@@ -107,7 +121,15 @@ def main() -> None:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument(
         "--model",
-        choices=["device_stats_mlp", "device_stats_gru", "device_stats_lstm", "device_stats_tcn"],
+        choices=[
+            "device_stats_mlp",
+            "device_stats_gru",
+            "device_stats_lstm",
+            "device_stats_tcn",
+            "device_stats_depthwise_cnn",
+            "device_stats_nlinear",
+            "device_stats_dlinear",
+        ],
         default="device_stats_gru",
     )
     parser.add_argument("--epochs", type=int, default=30)

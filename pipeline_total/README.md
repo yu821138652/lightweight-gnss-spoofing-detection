@@ -339,7 +339,7 @@ val_misclassifications_<model>_by_tow.csv
 
 来源：`pipeline_total/14_train_device_models.py`
 
-**何时运行：** 第 13 步完成且先通过干运行后。`device_stats_mlp` 是最低复杂度对照；`device_stats_gru`、`device_stats_lstm` 和 `device_stats_tcn` 分别提供门控循环、长短期记忆和因果卷积的轻量时序对照，默认隐藏层为 24。
+**何时运行：** 第 13 步完成且先通过干运行后。`device_stats_mlp` 是最低复杂度对照；`device_stats_tcn`、`device_stats_depthwise_cnn` 分别提供标准和深度可分离的因果卷积；`device_stats_nlinear`、`device_stats_dlinear` 是趋势/残差线性分类对照；GRU、LSTM 用于补充循环时序对照。默认隐藏层为 24。
 
 **为什么运行：** 该模型直接输出设备告警，训练目标与部署目标一致，不依赖逐卫星阈值或多数投票。训练仅使用 train，早停仅查看 val；未锁定前严禁读取 test。
 
@@ -364,6 +364,37 @@ val_misclassifications_<model>_by_tow.csv
   --batch-size 256 `
   --patience 6 `
   --seed 2026
+```
+
+## 15_train_device_lightgbm.py
+
+来源：`pipeline_total/15_train_device_lightgbm.py`
+
+**何时运行：** 需要验证设备统计窗口是否已经可以由非神经树模型充分区分时。LightGBM 将同一设备的因果窗口展平为结构化输入，作为深度模型的工程化对照。
+
+**为什么运行：** 若 LightGBM 接近或超过神经模型，说明收益主要来自统计特征；若明显落后，则说明时序表征仍有必要。默认限制叶子数、深度和树数，并记录模型文件大小，避免将大树集误认为轻量部署模型。
+
+先干运行：
+
+```powershell
+& $PY pipeline_total\15_train_device_lightgbm.py `
+  --data-dir output\device_tensors_static_cross_env_l15 `
+  --output-dir output\training\device_lightgbm_static_cross_env_l15 `
+  --dry-run
+```
+
+## 16_collect_device_experiment_results.py
+
+来源：`pipeline_total/16_collect_device_experiment_results.py`
+
+**何时运行：** 每完成一批窗口或模型实验后运行。它不训练、不读取原始 CSV，只汇总已有训练目录中的 validation/test 指标。
+
+**为什么运行：** 统一输出模型、窗口、Recall、FAR、Macro-F1 和模型大小，避免人工抄录结果或将不同实验目录混淆。筛选时应先比较 validation；旧 test 仅作为历史参考。
+
+```powershell
+& $PY pipeline_total\16_collect_device_experiment_results.py `
+  --training-root output\training `
+  --output-csv output\experiment_summaries\device_model_results.csv
 ```
 
 ## 11_evaluate_device_aggregation.py
