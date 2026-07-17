@@ -263,32 +263,35 @@ def main() -> None:
     parser.add_argument("--model", required=True, help="Checkpoint model name, for example signal_lstm")
     parser.add_argument("--checkpoint", type=Path, default=None)
     parser.add_argument("--output-csv", type=Path, default=None)
+    parser.add_argument("--split", choices=["val", "test"], default="val")
     parser.add_argument("--batch-size", type=int, default=256)
     args = parser.parse_args()
 
     checkpoint_path = args.checkpoint or args.model_dir / f"best_{args.model}.pt"
-    npz_path = args.data_dir / "val.npz"
+    npz_path = args.data_dir / f"{args.split}.npz"
     manifest_path = args.data_dir / "recording_split_manifest.csv"
     for path in (args.csv, checkpoint_path, npz_path, manifest_path):
         if not path.exists():
             raise FileNotFoundError(path)
-    output_csv = args.output_csv or args.model_dir / f"validation_misclassifications_{args.model}.csv"
+    output_csv = args.output_csv or args.model_dir / f"{args.split}_misclassifications_{args.model}.csv"
     output_csv.parent.mkdir(parents=True, exist_ok=True)
 
     tensor_builder = load_module("tensor_builder_for_error_analysis", PROJECT_ROOT / "pipeline_total" / "05_build_train_val_test_tensors.py")
     training_module = load_module("training_module_for_error_analysis", PROJECT_ROOT / "pipeline_total" / "07_train_models.py")
-    frame, identity_column = prepare_validation_frame(args.csv, manifest_path, tensor_builder)
+    frame, identity_column = prepare_validation_frame(
+        args.csv, manifest_path, tensor_builder, split=args.split
+    )
     expected_mask, expected_y, metadata = reconstruct_validation_metadata(
-        frame, identity_column, tensor_builder.FEATURE_COLS
+        frame, identity_column, tensor_builder.FEATURE_COLS, split=args.split
     )
     checkpoint, probabilities, predicted_labels, dataset = predict_validation(
         training_module, checkpoint_path, npz_path, args.batch_size
     )
 
     if expected_mask.shape != tuple(dataset.mask.shape) or not np.array_equal(expected_mask, dataset.mask.numpy()):
-        raise RuntimeError("Reconstructed validation mask differs from val.npz; refusing to export misaligned rows.")
+        raise RuntimeError(f"Reconstructed {args.split} mask differs from {npz_path.name}; refusing to export misaligned rows.")
     if expected_y.shape != tuple(dataset.y.shape) or not np.array_equal(expected_y, dataset.y.numpy()):
-        raise RuntimeError("Reconstructed validation labels differ from val.npz; refusing to export misaligned rows.")
+        raise RuntimeError(f"Reconstructed {args.split} labels differ from {npz_path.name}; refusing to export misaligned rows.")
     if len(metadata) != len(probabilities):
         raise RuntimeError(f"Metadata rows ({len(metadata)}) do not match valid predictions ({len(probabilities)}).")
 
@@ -311,6 +314,7 @@ def main() -> None:
         [
             {"item": "checkpoint", "value": str(checkpoint_path)},
             {"item": "model", "value": checkpoint["model"]},
+            {"item": "split", "value": args.split},
             {"item": "valid_signal_predictions", "value": len(metadata)},
             {"item": "false_positive", "value": int((errors["error_type"] == "false_positive").sum())},
             {"item": "false_negative", "value": int((errors["error_type"] == "false_negative").sum())},

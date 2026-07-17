@@ -269,17 +269,32 @@ $PY = "C:\Users\Asus\AppData\Local\Microsoft\WindowsApps\PythonSoftwareFoundatio
 输出写入对应模型目录：
 
 ```text
-validation_misclassifications_<model>.csv
-validation_misclassifications_<model>_summary.csv
-validation_misclassifications_<model>_by_recording.csv
-validation_misclassifications_<model>_by_source_log.csv
-validation_misclassifications_<model>_by_signal_band.csv
-validation_misclassifications_<model>_by_tow.csv
+val_misclassifications_<model>.csv
+val_misclassifications_<model>_summary.csv
+val_misclassifications_<model>_by_recording.csv
+val_misclassifications_<model>_by_source_log.csv
+val_misclassifications_<model>_by_signal_band.csv
+val_misclassifications_<model>_by_tow.csv
 ```
 
 主 CSV 仅包含 false positive 和 false negative，字段包括窗口起止时间、当前 TOW、录制环境、Session、设备、来源日志、`signal_id`、真实/预测标签、欺骗概率及 7 项当前历元特征。
 
 四个汇总 CSV 分别用于定位错误集中在哪个录制单元、哪个设备源日志、哪个信号频段、哪个当前 TOW。它们基于完整 validation 预测计算 TP、TN、FP、FN、Recall、漏检率、FAR 与总体错误率，不能只按错分主 CSV 的行数推断比例。
+
+### 已锁定模型的测试诊断
+
+当且仅当模型、特征和设备告警规则已经锁定后，可使用 `--split test` 导出正式测试集错分；该步骤只用于解释结果，不能再依据它调整模型或阈值：
+
+```powershell
+& $PY pipeline_total\09_export_validation_misclassifications.py `
+  --data-dir output\tensors_static_cross_env `
+  --csv output\processed_gnss_data.csv `
+  --model-dir output\training\signal_lstm_static_cross_env `
+  --model signal_lstm `
+  --split test
+```
+
+未指定 `--split` 时默认导出 validation 错分；文件名前缀对应为 `val_` 或 `test_`，避免覆盖不同集合的诊断结果。
 
 ## 10_plot_validation_error_review.py
 
