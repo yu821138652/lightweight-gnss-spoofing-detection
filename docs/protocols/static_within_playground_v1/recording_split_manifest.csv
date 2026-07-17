@@ -1,0 +1,5 @@
+recording_id,Environment,Scenario,Session,split
+0,playground,st_L5,2025.07.30.09.41_2025.07.30.09.45,train
+1,playground,st_L_15,2025.07.30.07.30_2025.07.30.08.01,train
+2,playground,st_L5,2025.07.30.09.48_2025.07.30.10.14,val
+3,playground,st_L1,2025.07.30.08.40_2025.07.30.09.12,test

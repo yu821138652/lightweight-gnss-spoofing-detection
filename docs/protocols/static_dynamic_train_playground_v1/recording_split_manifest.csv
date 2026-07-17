@@ -1,0 +1,12 @@
+recording_id,Environment,Scenario,Session,split
+0,playground,st_L5,2025.07.30.09.41_2025.07.30.09.45,train
+1,playground,st_L_15,2025.07.30.07.30_2025.07.30.08.01,train
+2,playground,dy_L1,2022.07.08semicircle,train
+3,playground,dy_L1,2022.07.08square,train
+4,playground,dy_L1,2025.07.30.09.13_2025.07.30.09.18（动态L1）,train
+5,playground,dy_L1,2025.07.30.09.29_2025.07.30.09.34（动态L1）,train
+6,playground,dy_L5,2025.07.30.10.40_2025.07.30.10.44（动态L5）,train
+7,playground,dy_L5,2025.07.30.10.49_2025.07.30.10.52（动态L5）,train
+8,playground,dy_L_15,2025.07.30.08.12_2025.07.30.08.16（动态L1+L5）,train
+9,playground,st_L5,2025.07.30.09.48_2025.07.30.10.14,val
+10,playground,st_L1,2025.07.30.08.40_2025.07.30.09.12,test

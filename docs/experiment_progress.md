@@ -65,10 +65,25 @@ test:  操场静态 2 个 Session
 3. **低虚警对照：** `MLP L=5` FAR 极低，但 Recall 明显低于 LightGBM，适合作为高保守报警的参考，而不是唯一部署方案。
 4. **主要瓶颈：** 多数模型 validation 高、跨环境开发参考 test 下降，表明 C/N0、AGC 等绝对统计值包含设备与环境指纹；当前问题不是简单增加模型复杂度。
 
-## 6. 下一阶段
+## 6. 同环境静态测试：static-only 与 static+dynamic 训练对照
+
+为回答“加入动态训练数据是否改善静态检测”，在新主楼和操场分别固定同一批静态 train/val/test Session。两组均使用 27 维设备统计特征、因果窗口 `L=30`、LightGBM 和阈值 0.5；训练、验证、测试均按完整 Session 隔离。
+
+`static-only` 只使用静态训练 Session；`static+dynamic` 完全复用同一批静态 train/val/test，仅额外向 train 加入同一环境的动态 Session。因此，下面同一环境内的两行可直接比较，衡量的是动态训练对未见静态 Session 的影响，不是动态 test 性能。
+
+| 环境 | 训练组成 | 静态 test Macro-F1 | Recall | FAR | 相对 static-only 的结论 |
+|---|---|---:|---:|---:|---|
+| 新主楼 | [static-only](protocols/static_within_new_building_v1/README.md) | 0.9689 | 99.80% | 4.15% | 基线已很高；验证集只有 1 个设备。 |
+| 新主楼 | [static+dynamic](protocols/static_dynamic_train_new_building_v1/README.md) | **0.9838** | **99.88%** | **2.13%** | 动态训练小幅提高 F1/Recall，并将 FAR 降低 2.02 个百分点。 |
+| 操场 | [static-only](protocols/static_within_playground_v1/README.md) | 0.7668 | 48.89% | **0.00%** | L5 验证集 Recall 为 0，模型过于保守。 |
+| 操场 | [static+dynamic](protocols/static_dynamic_train_playground_v1/README.md) | **0.9944** | **98.87%** | 0.17% | 动态训练显著改善静态 L1 test 的 Recall，F1 提升 0.2276。 |
+
+初步结论：在这两组固定 Session 对照中，加入同环境动态训练没有损害静态 test，且操场上明显改善了静态召回。该结果支持“动态数据可作为训练期分布扩增”的假设，但样本数仍有限，频段、设备和 Session 时段同时变化；必须使用多折 Session-CV 及独立动态 test 进一步验证。
+
+## 7. 下一阶段
 
 1. 导出 `LightGBM L=30` 的特征贡献，分析特征组和历史时刻贡献。
 2. 构造因果相对特征：相对滚动基线、变化率、短期波动、分位差等。
-3. 以 `LightGBM L=30`、`DLinear L=30` 和 `MLP L=5` 为固定参考，在新特征协议上开展比较。
-4. 使用 4 折静态 Session-CV，随后开展跨设备、跨环境、静态到动态迁移。
+3. 以 `LightGBM L=30`、`DLinear L=30` 和 `MLP L=5` 为固定参考，在新特征协议上开展同环境与跨环境比较。
+4. 使用 4 折静态 Session-CV，并分别报告环境内、跨环境、跨设备和静态到动态迁移结果。
 5. 增加 TTD、虚警频率、模型大小、CPU/端侧时延；教师模型和知识蒸馏仅在上述基础完成后进行。
