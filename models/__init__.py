@@ -2,7 +2,9 @@
 
 from .gnss_signal_baselines import (
     DeviceStatsGRU,
+    DeviceStatsLSTM,
     DeviceStatsMLP,
+    DeviceStatsTCN,
     SignalGRU,
     SignalLSTM,
     SignalMLP,
@@ -18,4 +20,6 @@ __all__ = [
     "SignalTransformerTiny",
     "DeviceStatsMLP",
     "DeviceStatsGRU",
+    "DeviceStatsLSTM",
+    "DeviceStatsTCN",
 ]

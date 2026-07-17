@@ -339,7 +339,7 @@ val_misclassifications_<model>_by_tow.csv
 
 来源：`pipeline_total/14_train_device_models.py`
 
-**何时运行：** 第 13 步完成且先通过干运行后。`device_stats_mlp` 是最低复杂度对照；`device_stats_gru` 是首个设备级时序模型，默认隐藏层为 24。
+**何时运行：** 第 13 步完成且先通过干运行后。`device_stats_mlp` 是最低复杂度对照；`device_stats_gru`、`device_stats_lstm` 和 `device_stats_tcn` 分别提供门控循环、长短期记忆和因果卷积的轻量时序对照，默认隐藏层为 24。
 
 **为什么运行：** 该模型直接输出设备告警，训练目标与部署目标一致，不依赖逐卫星阈值或多数投票。训练仅使用 train，早停仅查看 val；未锁定前严禁读取 test。
 

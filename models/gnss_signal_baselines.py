@@ -204,3 +204,49 @@ class DeviceStatsGRU(nn.Module):
             raise ValueError(f"Expected [batch, time, {self.input_dim}], got {tuple(x.shape)}")
         _, hidden = self.gru(x)
         return self.classifier(hidden[-1])
+
+
+class DeviceStatsLSTM(nn.Module):
+    """Small LSTM alternative for direct device-level alarm prediction."""
+
+    def __init__(self, input_dim: int, hidden_dim: int = 24, dropout: float = 0.1):
+        super().__init__()
+        self.input_dim = input_dim
+        self.lstm = nn.LSTM(input_dim, hidden_dim, batch_first=True)
+        self.classifier = nn.Sequential(
+            nn.LayerNorm(hidden_dim),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, 2),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if x.ndim != 3 or x.shape[-1] != self.input_dim:
+            raise ValueError(f"Expected [batch, time, {self.input_dim}], got {tuple(x.shape)}")
+        _, (hidden, _) = self.lstm(x)
+        return self.classifier(hidden[-1])
+
+
+class DeviceStatsTCN(nn.Module):
+    """Causal convolutional device-level baseline for short GNSS windows."""
+
+    def __init__(self, input_dim: int, hidden_dim: int = 24, dropout: float = 0.1):
+        super().__init__()
+        self.input_dim = input_dim
+        self.encoder = nn.Sequential(
+            CausalConv1d(input_dim, hidden_dim, kernel_size=3),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            CausalConv1d(hidden_dim, hidden_dim, kernel_size=3, dilation=2),
+            nn.GELU(),
+        )
+        self.classifier = nn.Sequential(
+            nn.LayerNorm(hidden_dim),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, 2),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if x.ndim != 3 or x.shape[-1] != self.input_dim:
+            raise ValueError(f"Expected [batch, time, {self.input_dim}], got {tuple(x.shape)}")
+        encoded = self.encoder(x.transpose(1, 2))
+        return self.classifier(encoded[:, :, -1])
