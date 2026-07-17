@@ -274,6 +274,69 @@ def perform_recording_level_split(df, output_dir, holdout_device=None):
     return df
 
 
+def apply_recording_split_manifest(df, manifest_path, output_dir, holdout_device=None):
+    """Apply an explicit recording-level split without changing its assignments."""
+    if holdout_device:
+        raise ValueError("--holdout_device cannot be combined with --split-manifest.")
+    manifest_path = Path(manifest_path)
+    manifest = pd.read_csv(manifest_path, encoding='utf-8-sig')
+    recording_columns = ['Environment', 'Scenario', 'Session']
+    required_columns = {*recording_columns, 'split'}
+    missing_columns = required_columns.difference(manifest.columns)
+    if missing_columns:
+        raise ValueError(f"Split manifest is missing columns: {sorted(missing_columns)}")
+    if manifest.duplicated(recording_columns).any():
+        raise ValueError("Split manifest assigns at least one recording more than once.")
+    unknown_splits = set(manifest['split'].dropna().astype(str)).difference({'train', 'val', 'test'})
+    if unknown_splits:
+        raise ValueError(f"Split manifest has unsupported split names: {sorted(unknown_splits)}")
+    missing_splits = {'train', 'val', 'test'}.difference(set(manifest['split'].astype(str)))
+    if missing_splits:
+        raise ValueError(f"Split manifest must contain train, val and test; missing: {sorted(missing_splits)}")
+
+    if 'recording_id' not in manifest.columns:
+        recording_index = pd.MultiIndex.from_frame(manifest[recording_columns].astype(str))
+        recording_ids, _ = pd.factorize(recording_index, sort=True)
+        manifest['recording_id'] = recording_ids.astype(np.int32)
+    if manifest['recording_id'].duplicated().any():
+        raise ValueError("Split manifest recording_id values must be unique.")
+
+    split_manifest = manifest[['recording_id', *recording_columns, 'split']].copy()
+    merged = df.merge(
+        split_manifest,
+        on=recording_columns,
+        how='inner',
+        validate='many_to_one',
+    )
+    if merged.empty:
+        raise ValueError("No processed CSV rows match the supplied split manifest.")
+    matched_recordings = merged[recording_columns].drop_duplicates()
+    if len(matched_recordings) != len(split_manifest):
+        unmatched = split_manifest.merge(matched_recordings, on=recording_columns, how='left', indicator=True)
+        preview = unmatched.loc[unmatched['_merge'] == 'left_only', recording_columns].head(5).to_dict('records')
+        raise ValueError(f"Split manifest recordings are absent after filtering: {preview}")
+
+    if 'SourceRelativePath' in merged.columns and merged['SourceRelativePath'].notna().all():
+        sequence_source = merged['SourceRelativePath'].astype(str)
+    elif 'SourceFile' in merged.columns:
+        sequence_source = merged['DeviceName'].astype(str) + '|' + merged['SourceFile'].astype(str)
+    else:
+        sequence_source = merged['DeviceName'].astype(str)
+        logging.warning("SourceRelativePath is unavailable; tensor sequences fall back to DeviceName.")
+    sequence_index = pd.MultiIndex.from_arrays([merged['recording_id'], sequence_source])
+    sequence_ids, _ = pd.factorize(sequence_index, sort=True)
+    merged['session_id'] = sequence_ids.astype(np.int32)
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_manifest = output_dir / 'recording_split_manifest.csv'
+    split_manifest.to_csv(output_manifest, index=False, encoding='utf-8-sig')
+    logging.info("Applied locked recording split manifest: %s", manifest_path)
+    logging.info("Recording split result: %s", merged['split'].value_counts().to_dict())
+    logging.info("Copied locked split manifest to: %s", output_manifest)
+    return merged
+
+
 def perform_stratified_split(df, holdout_device=None):
     if holdout_device:
         logging.info(f"--- 1. LODO Split (Holdout: {holdout_device}) ---")
@@ -709,6 +772,8 @@ def main():
                         help='Include rows whose LabelStatus is not reviewed. Disabled by default.')
     parser.add_argument('--split-only', action='store_true',
                         help='Write and inspect recording_split_manifest.csv without building NPZ tensors.')
+    parser.add_argument('--split-manifest', type=str, default=None,
+                        help='Locked recording-level train/val/test manifest to apply instead of automatic splitting.')
     args = parser.parse_args()
     global FEATURE_COLS, MAX_SIGNALS
     FEATURE_COLS = FEATURE_PRESETS[args.feature_preset]
@@ -788,7 +853,10 @@ def main():
     # 4. 标准处理流程
     # =============================================
     df = preprocess_features(df)
-    df_split = perform_recording_level_split(df, output_dir, args.holdout_device)
+    if args.split_manifest:
+        df_split = apply_recording_split_manifest(df, args.split_manifest, output_dir, args.holdout_device)
+    else:
+        df_split = perform_recording_level_split(df, output_dir, args.holdout_device)
     if args.split_only:
         logging.info("Split-only mode complete; no NPZ tensors were written.")
         return

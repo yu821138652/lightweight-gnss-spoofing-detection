@@ -163,3 +163,44 @@ class SignalTransformerTiny(nn.Module):
         )
         encoded = self.encoder(sequence, mask=causal_mask)
         return self.classifier(encoded[:, -1]).reshape(batch_size, signal_count, 2)
+
+
+class DeviceStatsMLP(nn.Module):
+    """Lowest-complexity device alarm baseline over a causal statistics window."""
+
+    def __init__(self, input_dim: int, time_steps: int, hidden_dim: int = 32, dropout: float = 0.1):
+        super().__init__()
+        self.input_dim = input_dim
+        self.time_steps = time_steps
+        self.classifier = nn.Sequential(
+            nn.LayerNorm(input_dim * time_steps),
+            nn.Linear(input_dim * time_steps, hidden_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, 2),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if x.ndim != 3 or tuple(x.shape[-2:]) != (self.time_steps, self.input_dim):
+            raise ValueError(f"Expected [batch, {self.time_steps}, {self.input_dim}], got {tuple(x.shape)}")
+        return self.classifier(x.reshape(x.shape[0], -1))
+
+
+class DeviceStatsGRU(nn.Module):
+    """Small GRU that emits one spoofing alarm for an aggregated device window."""
+
+    def __init__(self, input_dim: int, hidden_dim: int = 24, dropout: float = 0.1):
+        super().__init__()
+        self.input_dim = input_dim
+        self.gru = nn.GRU(input_dim, hidden_dim, batch_first=True)
+        self.classifier = nn.Sequential(
+            nn.LayerNorm(hidden_dim),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, 2),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if x.ndim != 3 or x.shape[-1] != self.input_dim:
+            raise ValueError(f"Expected [batch, time, {self.input_dim}], got {tuple(x.shape)}")
+        _, hidden = self.gru(x)
+        return self.classifier(hidden[-1])

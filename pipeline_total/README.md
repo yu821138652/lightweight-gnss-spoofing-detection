@@ -316,6 +316,56 @@ val_misclassifications_<model>_by_tow.csv
 
 输出目录中包含每台设备的 PNG 复核图和 `device_epoch_prediction_summary.csv`，后者保留了绘图前的设备级概率与特征统计，便于进一步筛选 TOW 区间。
 
+## 13_build_device_stats_tensors.py
+
+来源：`pipeline_total/13_build_device_stats_tensors.py`
+
+**何时运行：** 逐卫星模型在设备级告警上出现大量漏检，需要测试“设备内多卫星联合特征”时。该步骤重新构建设备级张量，不会改动逐卫星张量或已有 checkpoint。
+
+**为什么运行：** 每个设备当前历元汇总全部有效卫星的 6 项连续特征中位数、标准差、P10、P90，以及可见卫星数、L1/L5 卫星比例，形成 27 维设备状态；连续 5 个历元作为因果窗口。设备真值为该历元任一有效卫星真实标签为 1。所有归一化统计量只由 train 设备历元计算。
+
+首次与 `static_cross_env_v1` 对比时，复用其锁定录制划分：
+
+```powershell
+& $PY pipeline_total\13_build_device_stats_tensors.py `
+  --csv output\processed_gnss_data.csv `
+  --split-manifest output\tensors_static_cross_env\recording_split_manifest.csv `
+  --output-dir output\device_tensors_static_cross_env
+```
+
+输出中的 `train.npz / val.npz / test.npz` 每行代表一个设备窗口，`*_metadata.csv` 可用于按录制和设备解释结果。
+
+## 14_train_device_models.py
+
+来源：`pipeline_total/14_train_device_models.py`
+
+**何时运行：** 第 13 步完成且先通过干运行后。`device_stats_mlp` 是最低复杂度对照；`device_stats_gru` 是首个设备级时序模型，默认隐藏层为 24。
+
+**为什么运行：** 该模型直接输出设备告警，训练目标与部署目标一致，不依赖逐卫星阈值或多数投票。训练仅使用 train，早停仅查看 val；未锁定前严禁读取 test。
+
+先干运行：
+
+```powershell
+& $PY pipeline_total\14_train_device_models.py `
+  --data-dir output\device_tensors_static_cross_env `
+  --output-dir output\training\device_stats_gru_static_cross_env `
+  --model device_stats_gru `
+  --dry-run
+```
+
+干运行通过后再正式训练：
+
+```powershell
+& $PY pipeline_total\14_train_device_models.py `
+  --data-dir output\device_tensors_static_cross_env `
+  --output-dir output\training\device_stats_gru_static_cross_env `
+  --model device_stats_gru `
+  --epochs 30 `
+  --batch-size 256 `
+  --patience 6 `
+  --seed 2026
+```
+
 ## 11_evaluate_device_aggregation.py
 
 来源：`pipeline_total/11_evaluate_device_aggregation.py`

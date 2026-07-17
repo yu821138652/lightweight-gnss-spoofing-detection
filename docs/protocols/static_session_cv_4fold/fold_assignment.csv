@@ -1,0 +1,9 @@
+﻿recording_id,Environment,Scenario,Session,rows,positive_rows,device_count,sequence_count,split,is_dynamic,cv_fold
+1,new_building,st_L5,2025.07.29.20.16_新主楼,312272,26046,5,5,train,False,0
+2,new_building,st_L5,2025.07.29.20.36_新主楼,50312,2642,1,1,train,False,1
+0,new_building,st_L1,2025.07.29.19.22_新主楼,250321,76993,4,4,train,False,2
+3,new_building,st_L_15,2025.07.29.18.42_新主楼,150132,57529,3,3,train,False,3
+4,playground,st_L1,2025.07.30.08.40_2025.07.30.09.12,503515,152994,6,7,val,False,0
+6,playground,st_L5,2025.07.30.09.48_2025.07.30.10.14,316105,38078,6,6,test,False,1
+5,playground,st_L5,2025.07.30.09.41_2025.07.30.09.45,56629,0,6,6,val,False,2
+7,playground,st_L_15,2025.07.30.07.30_2025.07.30.08.01,499998,185568,6,6,test,False,3

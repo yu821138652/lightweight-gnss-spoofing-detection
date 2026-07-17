@@ -1,0 +1,9 @@
+﻿recording_id,Environment,Scenario,Session,split
+1,new_building,st_L5,2025.07.29.20.16_新主楼,val
+2,new_building,st_L5,2025.07.29.20.36_新主楼,train
+0,new_building,st_L1,2025.07.29.19.22_新主楼,train
+3,new_building,st_L_15,2025.07.29.18.42_新主楼,test
+4,playground,st_L1,2025.07.30.08.40_2025.07.30.09.12,val
+6,playground,st_L5,2025.07.30.09.48_2025.07.30.10.14,train
+5,playground,st_L5,2025.07.30.09.41_2025.07.30.09.45,train
+7,playground,st_L_15,2025.07.30.07.30_2025.07.30.08.01,test
