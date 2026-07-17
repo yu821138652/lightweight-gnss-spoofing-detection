@@ -39,7 +39,13 @@ def load_module(module_name: str, path: Path):
     return module
 
 
-def prepare_validation_frame(csv_path: Path, manifest_path: Path, tensor_builder, include_features: bool = True):
+def prepare_validation_frame(
+    csv_path: Path,
+    manifest_path: Path,
+    tensor_builder,
+    include_features: bool = True,
+    split: str = "val",
+):
     manifest = pd.read_csv(manifest_path)
     required_manifest_columns = {"recording_id", "Environment", "Scenario", "Session", "split"}
     missing_manifest_columns = required_manifest_columns.difference(manifest.columns)
@@ -50,12 +56,12 @@ def prepare_validation_frame(csv_path: Path, manifest_path: Path, tensor_builder
     # The unified CSV can exceed available RAM. This function only rebuilds
     # validation metadata, so retain matching validation recordings while
     # streaming the source file instead of loading the full dataset first.
-    validation_manifest = manifest.loc[manifest["split"] == "val", ["recording_id", *join_columns, "split"]].copy()
-    if validation_manifest.empty:
-        raise ValueError("Split manifest has no validation recordings.")
-    validation_keys = {
+    target_manifest = manifest.loc[manifest["split"] == split, ["recording_id", *join_columns, "split"]].copy()
+    if target_manifest.empty:
+        raise ValueError(f"Split manifest has no {split!r} recordings.")
+    target_keys = {
         tuple(row)
-        for row in validation_manifest[join_columns].astype(str).itertuples(index=False, name=None)
+        for row in target_manifest[join_columns].astype(str).itertuples(index=False, name=None)
     }
     available_columns = pd.read_csv(csv_path, nrows=0).columns.tolist()
     requested_columns = {
@@ -85,13 +91,13 @@ def prepare_validation_frame(csv_path: Path, manifest_path: Path, tensor_builder
     validation_chunks: list[pd.DataFrame] = []
     for chunk_index, chunk in enumerate(pd.read_csv(csv_path, usecols=use_columns, chunksize=20_000), start=1):
         chunk_keys = pd.MultiIndex.from_frame(chunk[join_columns].astype(str))
-        matched = np.fromiter((key in validation_keys for key in chunk_keys), dtype=bool, count=len(chunk))
+        matched = np.fromiter((key in target_keys for key in chunk_keys), dtype=bool, count=len(chunk))
         if matched.any():
             validation_chunks.append(chunk.loc[matched].copy())
         if chunk_index % 20 == 0:
             print(f"  scanned {chunk_index * 20_000:,} CSV rows...", flush=True)
     if not validation_chunks:
-        raise ValueError("No processed CSV rows match validation recordings in the locked split manifest.")
+        raise ValueError(f"No processed CSV rows match {split!r} recordings in the locked split manifest.")
     frame = pd.concat(validation_chunks, ignore_index=True)
     if "Label" not in frame.columns:
         raise ValueError("Processed CSV has no Label column")
@@ -102,7 +108,7 @@ def prepare_validation_frame(csv_path: Path, manifest_path: Path, tensor_builder
         frame = tensor_builder.preprocess_features(frame)
     identity_column = tensor_builder.resolve_identity_column(frame)
     frame = frame.merge(
-        validation_manifest,
+        target_manifest,
         on=join_columns,
         how="inner",
         validate="many_to_one",
@@ -122,7 +128,9 @@ def prepare_validation_frame(csv_path: Path, manifest_path: Path, tensor_builder
     return frame, identity_column
 
 
-def reconstruct_validation_metadata(frame: pd.DataFrame, identity_column: str, feature_columns: list[str]):
+def reconstruct_validation_metadata(
+    frame: pd.DataFrame, identity_column: str, feature_columns: list[str], split: str = "val"
+):
     metadata_columns = [
         "Environment",
         "Scenario",
@@ -140,7 +148,7 @@ def reconstruct_validation_metadata(frame: pd.DataFrame, identity_column: str, f
     metadata_columns = [column for column in metadata_columns if column in frame.columns and column not in feature_columns]
     available_feature_columns = [column for column in feature_columns if column in frame.columns]
     keep_columns = ["session_id", "TimeNanos", identity_column, "Label", *available_feature_columns, *metadata_columns]
-    validation = frame.loc[frame["split"] == "val", keep_columns].copy()
+    validation = frame.loc[frame["split"] == split, keep_columns].copy()
     aggregation = {"Label": "max", **{column: "median" for column in available_feature_columns}}
     aggregation.update({column: "first" for column in metadata_columns})
     validation = (

@@ -318,4 +318,16 @@ validation_misclassifications_<model>_by_tow.csv
   --rule majority
 ```
 
-多数投票是首个部署聚合基线，并非最终规则。后续可以只在 validation 集比较 `any`、`k_of_n` 和 `ratio` 规则，再锁定规则后进行正式测试。不能只看 Accuracy，仍须同时检查攻击 Recall、FAR 和后续的检测时延。
+多数投票是首个部署聚合基线，并非最终规则。只在 validation 集比较 `any`、`k_of_n` 和 `ratio` 规则，锁定模型和规则后，才允许显式读取测试集：
+
+```powershell
+& $PY pipeline_total\11_evaluate_device_aggregation.py `
+  --data-dir output\tensors_static_cross_env `
+  --csv output\processed_gnss_data.csv `
+  --model-dir output\training\signal_lstm_static_cross_env `
+  --model signal_lstm `
+  --rule majority `
+  --split test
+```
+
+测试结果会写入 `device_level_test/`，与 validation 的 `device_level_val/` 分开保存。不能只看 Accuracy，仍须同时检查攻击 Recall、FAR 和后续的检测时延。

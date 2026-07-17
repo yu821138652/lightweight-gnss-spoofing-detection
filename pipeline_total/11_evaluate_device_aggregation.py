@@ -1,10 +1,10 @@
-"""Evaluate device-level alarms by aggregating validation signal predictions.
+"""Evaluate device-level alarms by aggregating split signal predictions.
 
 This script converts per-signal predictions at one current epoch into one
 device alarm. For a single-band spoofing experiment, signals in unaffected
 bands correctly retain label 0. Therefore device truth is positive when any
-valid signal at the current epoch has true label 1. It defaults to validation
-and does not read test.npz.
+valid signal at the current epoch has true label 1. It defaults to validation;
+test data is only read when --split test is explicitly requested.
 """
 
 from __future__ import annotations
@@ -133,6 +133,7 @@ def main() -> None:
     parser.add_argument("--csv", type=Path, default=PROJECT_ROOT / "output" / "processed_gnss_data.csv")
     parser.add_argument("--model-dir", type=Path, required=True)
     parser.add_argument("--model", required=True)
+    parser.add_argument("--split", choices=["val", "test"], default="val")
     parser.add_argument("--rule", choices=["majority", "any", "k_of_n", "ratio"], default="majority")
     parser.add_argument("--min-positive-signals", type=int, default=2)
     parser.add_argument("--positive-ratio", type=float, default=0.2)
@@ -145,9 +146,9 @@ def main() -> None:
         parser.error("--positive-ratio must be in (0, 1]")
 
     checkpoint_path = args.model_dir / f"best_{args.model}.pt"
-    validation_npz = args.data_dir / "val.npz"
+    split_npz = args.data_dir / f"{args.split}.npz"
     manifest_path = args.data_dir / "recording_split_manifest.csv"
-    for path in (args.csv, checkpoint_path, validation_npz, manifest_path):
+    for path in (args.csv, checkpoint_path, split_npz, manifest_path):
         if not path.exists():
             raise FileNotFoundError(path)
 
@@ -163,22 +164,22 @@ def main() -> None:
         "training_module_for_device_metrics",
         PROJECT_ROOT / "pipeline_total" / "07_train_models.py",
     )
-    print("[1/5] Rebuilding validation metadata from processed CSV...", flush=True)
+    print(f"[1/5] Rebuilding {args.split} metadata from processed CSV...", flush=True)
     frame, identity_column = error_export.prepare_validation_frame(
-        args.csv, manifest_path, tensor_builder, include_features=False
+        args.csv, manifest_path, tensor_builder, include_features=False, split=args.split
     )
-    print(f"[2/5] Filtered validation rows: {len(frame):,}; rebuilding window metadata...", flush=True)
+    print(f"[2/5] Filtered {args.split} rows: {len(frame):,}; rebuilding window metadata...", flush=True)
     expected_mask, expected_y, metadata = error_export.reconstruct_validation_metadata(
-        frame, identity_column, []
+        frame, identity_column, [], split=args.split
     )
     print(f"[3/5] Metadata ready: {len(metadata):,} valid signal windows; loading model...", flush=True)
     checkpoint, probabilities, predicted_labels, dataset = predict_validation(
-        training_module, checkpoint_path, validation_npz, args.batch_size
+        training_module, checkpoint_path, split_npz, args.batch_size
     )
     if expected_mask.shape != tuple(dataset.mask.shape) or not np.array_equal(expected_mask, dataset.mask.numpy()):
-        raise RuntimeError("Reconstructed validation mask differs from val.npz; refusing to aggregate misaligned rows.")
+        raise RuntimeError(f"Reconstructed {args.split} mask differs from {split_npz.name}; refusing to aggregate misaligned rows.")
     if expected_y.shape != tuple(dataset.y.shape) or not np.array_equal(expected_y, dataset.y.numpy()):
-        raise RuntimeError("Reconstructed validation labels differ from val.npz; refusing to aggregate misaligned rows.")
+        raise RuntimeError(f"Reconstructed {args.split} labels differ from {split_npz.name}; refusing to aggregate misaligned rows.")
     if len(metadata) != len(probabilities):
         raise RuntimeError("Metadata rows do not match valid validation predictions.")
 
@@ -190,13 +191,14 @@ def main() -> None:
     metrics.update(
         {
             "model": checkpoint["model"],
+            "split": args.split,
             "rule": args.rule,
             "min_positive_signals": args.min_positive_signals,
             "positive_ratio": args.positive_ratio,
         }
     )
 
-    output_dir = args.output_dir or args.model_dir / "device_level_validation"
+    output_dir = args.output_dir or args.model_dir / f"device_level_{args.split}"
     output_dir.mkdir(parents=True, exist_ok=True)
     suffix = f"{args.model}_{args.rule}"
     predictions_path = output_dir / f"device_epoch_predictions_{suffix}.csv"
