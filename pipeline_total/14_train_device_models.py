@@ -29,6 +29,7 @@ from models import (
     DeviceStatsMLP,
     DeviceStatsNLinear,
     DeviceStatsTCN,
+    DeviceStatsTSMixer,
 )
 
 
@@ -81,6 +82,8 @@ def build_model(name: str, input_dim: int, time_steps: int, hidden_dim: int, dro
         return DeviceStatsNLinear(input_dim=input_dim, time_steps=time_steps, hidden_dim=hidden_dim, dropout=dropout)
     if name == "device_stats_dlinear":
         return DeviceStatsDLinear(input_dim=input_dim, time_steps=time_steps, hidden_dim=hidden_dim, dropout=dropout)
+    if name == "device_stats_tsmixer":
+        return DeviceStatsTSMixer(input_dim=input_dim, time_steps=time_steps, hidden_dim=hidden_dim, dropout=dropout)
     raise ValueError(f"Unknown model: {name}")
 
 
@@ -129,6 +132,7 @@ def main() -> None:
             "device_stats_depthwise_cnn",
             "device_stats_nlinear",
             "device_stats_dlinear",
+            "device_stats_tsmixer",
         ],
         default="device_stats_gru",
     )

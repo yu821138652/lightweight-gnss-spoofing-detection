@@ -348,3 +348,55 @@ class DeviceStatsDLinear(nn.Module):
         trend_features = self.trend_projection(trend.transpose(1, 2)).squeeze(-1)
         seasonal_features = self.seasonal_projection(seasonal.transpose(1, 2)).squeeze(-1)
         return self.classifier(torch.cat([trend_features, seasonal_features], dim=-1))
+
+
+class DeviceStatsTSMixer(nn.Module):
+    """Compact TSMixer-style classifier over a complete causal device window."""
+
+    def __init__(
+        self,
+        input_dim: int,
+        time_steps: int,
+        hidden_dim: int = 24,
+        dropout: float = 0.1,
+        num_blocks: int = 2,
+    ):
+        super().__init__()
+        self.input_dim = input_dim
+        self.time_steps = time_steps
+        self.time_norms = nn.ModuleList([nn.LayerNorm(input_dim) for _ in range(num_blocks)])
+        self.time_mixers = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(time_steps, time_steps),
+                nn.GELU(),
+                nn.Dropout(dropout),
+                nn.Linear(time_steps, time_steps),
+                nn.Dropout(dropout),
+            )
+            for _ in range(num_blocks)
+        ])
+        self.feature_norms = nn.ModuleList([nn.LayerNorm(input_dim) for _ in range(num_blocks)])
+        self.feature_mixers = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(input_dim, hidden_dim),
+                nn.GELU(),
+                nn.Dropout(dropout),
+                nn.Linear(hidden_dim, input_dim),
+                nn.Dropout(dropout),
+            )
+            for _ in range(num_blocks)
+        ])
+        self.classifier = nn.Sequential(
+            nn.LayerNorm(input_dim),
+            nn.Linear(input_dim, 2),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if x.ndim != 3 or tuple(x.shape[-2:]) != (self.time_steps, self.input_dim):
+            raise ValueError(f"Expected [batch, {self.time_steps}, {self.input_dim}], got {tuple(x.shape)}")
+        for time_norm, time_mixer, feature_norm, feature_mixer in zip(
+            self.time_norms, self.time_mixers, self.feature_norms, self.feature_mixers
+        ):
+            x = x + time_mixer(time_norm(x).transpose(1, 2)).transpose(1, 2)
+            x = x + feature_mixer(feature_norm(x))
+        return self.classifier(x[:, -1])

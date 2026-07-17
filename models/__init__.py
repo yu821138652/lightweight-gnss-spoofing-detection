@@ -8,6 +8,7 @@ from .gnss_signal_baselines import (
     DeviceStatsMLP,
     DeviceStatsNLinear,
     DeviceStatsTCN,
+    DeviceStatsTSMixer,
     SignalGRU,
     SignalLSTM,
     SignalMLP,
@@ -28,4 +29,5 @@ __all__ = [
     "DeviceStatsDepthwiseCNN",
     "DeviceStatsNLinear",
     "DeviceStatsDLinear",
+    "DeviceStatsTSMixer",
 ]
