@@ -18,8 +18,11 @@ def metric_identity(path: Path) -> tuple[str, str]:
 
 
 def infer_window(run_dir: Path, default_window: int) -> int:
-    match = re.search(r"(?:^|_)l(\d+)(?:_|$)", run_dir.name.lower())
-    return int(match.group(1)) if match else default_window
+    for candidate in (run_dir, *run_dir.parents):
+        match = re.search(r"(?:^|_)l(\d+)(?:_|$)", candidate.name.lower())
+        if match:
+            return int(match.group(1))
+    return default_window
 
 
 def main() -> None:
@@ -40,6 +43,8 @@ def main() -> None:
             split, model = metric_identity(metric_path)
             metrics = json.loads(metric_path.read_text(encoding="utf-8"))
         except (ValueError, json.JSONDecodeError):
+            continue
+        if "macro_f1" not in metrics:
             continue
         run_dir = metric_path.parent
         key = (str(run_dir.resolve()), model)

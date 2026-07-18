@@ -13,9 +13,9 @@
 - 默认逐信号输入固定为 7 项真实设备可获得的 GNSS Raw 特征，窗口标签语义已修正为“当前端点历元”，避免攻击结束后的标签滞后；
 - 已完成逐卫星模型、设备级聚合报警和直接设备级模型的第一轮比较；当前采用 27 维多卫星统计特征直接输出设备告警；
 - 静态跨环境开发参考结果中，`LightGBM L=30` 当前最优（Macro-F1 `0.9161`、Recall `0.7908`、FAR `0.2912%`）；`DLinear L=30` 是当前最强轻量神经网络候选（1,540 参数、Macro-F1 `0.8342`、Recall `0.6068`）；
-- 已完成 4 折静态多环境 Session-CV：`LightGBM L=30` 的 static-only 为 Macro-F1 `0.8964 +/- 0.0693`，加入动态训练后为 `0.9169 +/- 0.0659`；下一阶段将围绕相对特征、跨设备/跨环境评估和检测时延开展复验。
+- 已完成 4 折静态多环境 Session-CV：在“动态仅加入训练、静态测试”的消融中，`LightGBM L=30` 从 Macro-F1 `0.8964 +/- 0.0693` 提升至 `0.9169 +/- 0.0659`；另已建立静态/动态均进入 train、val、test 的统一设备级检测基线，详细分组结果见实验进展文档。
 
-> **结果边界：** 当前 `static_cross_env` 的操场 test 已用于模型、窗口和错误样本诊断，只能作为开发参考，不再是论文最终独立测试集。详细实验状态、完整结果和使用边界见 [docs/experiment_progress.md](docs/experiment_progress.md)。
+> **结果边界：** 当前 `static_cross_env` 的操场 test 已用于模型、窗口和错误样本诊断，只能作为开发参考，不再是论文最终独立测试集。先查阅 [实验台账](docs/experiment_registry.md) 了解每项结果的模型、窗口、环境和 Session 划分；过程记录见 [docs/experiment_progress.md](docs/experiment_progress.md)。
 
 ## 项目主线
 
@@ -393,6 +393,7 @@ TTD 检测时间评估
 - `docs/dynamic_labeling_assistant.md`：动态场景短时欺骗候选区间的生成与人工复核
 - `docs/model_training_framework.md`：张量接口、轻量 baseline、训练测试边界与模型扩展规范
 - `docs/static_session_cv_protocol.md`：4 折静态 Session-CV 的锁定划分与复现实验规则
+- `docs/experiment_registry.md`：当前所有已完成实验的任务边界、模型、窗口、Session 划分与结果总表
 - `pipeline_total/README.md`：全流程脚本顺序说明
 
 ## 当前原则

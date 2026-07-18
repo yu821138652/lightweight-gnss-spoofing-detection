@@ -432,6 +432,32 @@ val_misclassifications_<model>_by_tow.csv
   --output-csv output\experiment_summaries\device_model_results.csv
 ```
 
+## 17_generate_static_dynamic_cv_manifests.py
+
+来源：`pipeline_total/17_generate_static_dynamic_cv_manifests.py`
+
+**何时运行：** 已有静态多环境 Session-CV 清单，且要测试“只向训练集加入动态 Session 是否改善静态测试”时运行。
+
+**为什么运行：** 保持每折静态 train/val/test 不变，仅把既有 mixed 清单中标记为 `train` 的动态 Session 追加到训练集，避免手工复制造成 Session 泄漏。该协议的 val/test 仍为静态，不是统一静态+动态检测任务。
+
+```powershell
+& $PY pipeline_total\17_generate_static_dynamic_cv_manifests.py
+```
+
+## 18_evaluate_device_motion_subgroups.py
+
+来源：`pipeline_total/18_evaluate_device_motion_subgroups.py`
+
+**何时运行：** 统一静态+动态模型完成 `--test-only` 后运行。
+
+**为什么运行：** 除总体 test 外，按 `Scenario` 分别计算静态和动态设备窗口的 Macro-F1、Recall、FAR，避免混合 test 的总体分数掩盖动态检测不足。
+
+```powershell
+& $PY pipeline_total\18_evaluate_device_motion_subgroups.py `
+  --data-dir output\device_tensors_multi_env_static_dynamic_mixed_l30 `
+  --model-dir output\training\device_lightgbm_multi_env_static_dynamic_mixed_l30
+```
+
 ## 11_evaluate_device_aggregation.py
 
 来源：`pipeline_total/11_evaluate_device_aggregation.py`
