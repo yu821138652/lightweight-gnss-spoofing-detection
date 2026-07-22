@@ -18,10 +18,12 @@
 | 08 | `08_inference.py` | 推理与指标输出 |
 | 09 | `09_export_validation_misclassifications.py` | 导出 validation 错分 |
 | 10 | `10_plot_validation_error_review.py` | 生成错分复核图 |
+| 22 | `22_generate_label_review_dashboards.py` | 按完整 Session 整合全设备、全特征的正式标签审查面板 |
 
 注意：
 
 - 02 的标签阴影仍来自脚本内场景级固定区间。操场动态 L15 当前权威区间是 `configs/preprocessing.yml` 中的 Session 级 `[260990, 261020]`，不能用历史 PNG 反推标签。
+- 22 读取 `data_csv/` 的每日志镜像 CSV，并以 `configs/preprocessing.yml` 的当前 Session 级配置为阴影来源；同时检查镜像 CSV 的 `Label` 是否已随配置重建。人工全量审查优先使用 22 的面板，而非 02 的历史单图。
 - 04 和配置文件是标签变化后的正式重建入口。
 - 05 的基础接口保留给旧路线；最近的 time-block 实验使用 20。
 
@@ -30,6 +32,16 @@
 ```powershell
 python pipeline_total/04_build_labeled_processed_csv.py --mode full --config configs/preprocessing.yml
 ```
+
+生成所有 Session 的标签审查包：
+
+```powershell
+python pipeline_total/22_generate_label_review_dashboards.py `
+  --input-dir data_csv `
+  --output-dir output/label_review_dashboards
+```
+
+输出根目录中的 `index.html` 用于浏览；每个 Session 另有 `dashboard.png`（全设备、标签时间轴和 7 项特征）与 `signals.csv`（逐 `signal_id` 清单）。`session_review_index.csv` 中的 `label_mismatch_rows > 0` 表示镜像 CSV 与正式配置不一致，应先重建该 Session 再训练。
 
 ## 11–18：P0–P5 历史设备级探索
 

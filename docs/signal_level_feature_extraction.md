@@ -108,7 +108,21 @@ python pipeline_total/05_build_train_val_test_tensors.py --csv output/processed_
    python pipeline_total/01_generate_plot_feature_csv.py --data-root data_raw/new_building --overwrite
    ```
 
-2. **何时运行：** 绘图 CSV 已生成，准备判断某个场景中各 Session 的欺骗起止时间时。
+2. **何时运行：** 需要对全部 Session 做一次系统人工标签审查，或修改标签配置后需要核对镜像 CSV 是否已经重建时。
+
+   **为什么运行：** 每个完整 Session 生成一张统一面板：设备按列、标签时间轴和 7 个特征按行，红色阴影来自当前 Session 级正式标签；同时导出 HTML 索引和 CSV/config 一致性检查，避免动态图继续被旧的静态或场景级标签图误导。
+
+   生成所有 Session 的审查包：
+
+   ```powershell
+   python pipeline_total/22_generate_label_review_dashboards.py `
+     --input-dir data_csv `
+     --output-dir output/label_review_dashboards
+   ```
+
+   浏览 `output/label_review_dashboards/index.html`。优先审查其中 `label_mismatch_rows > 0` 的 Session；图上红色背景是正式攻击时间，红色条表示受影响频段，黑色刻度是当前 CSV 已标正的观测。
+
+3. **何时运行：** 已生成绘图 CSV，且需要放大检查某一个设备、特征或候选边界时。
 
    **为什么运行：** 将多设备、多信号的特征变化转为可比对的 PNG，作为人工 TOW 标签的直接证据。
 
@@ -118,13 +132,13 @@ python pipeline_total/05_build_train_val_test_tensors.py --csv output/processed_
    python pipeline_total/02_batch_plot_feature_images.py --input-base data_raw/new_building --output-base output/new_building_label_plots --scenario st_L1
    ```
 
-3. 优先查看至少两台设备的 `Cn0DbHz`，并使用可用设备的 `AgcDb`、时间不确定度和
+4. 优先查看至少两台设备的 `Cn0DbHz`，并使用可用设备的 `AgcDb`、时间不确定度和
    伪距率不确定度交叉验证。Pixel Watch1 的 AGC 全缺失，不能单独作为 AGC 依据。
 
-4. 记录所有设备共同出现的异常开始/结束秒。区间两端均为闭区间，格式为
+5. 记录所有设备共同出现的异常开始/结束秒。区间两端均为闭区间，格式为
    `[start_tow, end_tow]`。仅有单设备异常、日志中断或无法确定的片段不写入正式标签。
 
-5. **何时运行：** 至少两台设备的变化共同支持同一候选区间，并完成第二人复核后。
+6. **何时运行：** 至少两台设备的变化共同支持同一候选区间，并完成第二人复核后。
 
    **为什么运行：** 标签配置是从原始 TXT 重新生成 `Label` 的唯一依据；只修改 CSV 会在下一次重建时丢失。
 
@@ -144,16 +158,17 @@ python pipeline_total/05_build_train_val_test_tensors.py --csv output/processed_
    已确认全程正常的 Session 使用 `status: reviewed` 与空 `intervals: []`。未完成复核的
    Session 不应写入配置，会自动保留为 `needs_review`。
 
-6. **何时运行：** 第 5 步写入或修改该 Session 的正式区间后。
+7. **何时运行：** 第 6 步写入或修改该 Session 的正式区间后。
 
    **为什么运行：** 将新标签真正写入该 Session 全部设备的派生 CSV，并通过审计确认字段和标签状态正确；不必每次重跑全部 132 个日志。
 
-   仅重建本人负责的 Session，并重新运行 CSV 审计：
+   仅重建本人负责的 Session，并重新运行 CSV 审计和该 Session 面板：
 
    ```powershell
    python scripts/build_mirrored_data_csv.py --environment new_building --scenario st_L1 --session 2025.07.29.19.22_新主楼 --overwrite
    python scripts/audit_extracted_csv.py --input-dir data_csv --output-json output/data_csv_audit.json
+   python pipeline_total/22_generate_label_review_dashboards.py --environment new_building --scenario st_L1 --session 2025.07.29.19.22_新主楼 --overwrite
    ```
 
-7. 在协作记录中提交 `Scenario`、`Session`、候选区间、交叉验证设备、图像路径和复核人。
+8. 在协作记录中提交 `Scenario`、`Session`、候选区间、交叉验证设备、图像路径和复核人。
    未经第二人复核的区间只作为候选，不进入 `reviewed` 配置。
