@@ -1,490 +1,150 @@
-# pipeline_total: GNSS 数据处理全流程脚本顺序
+# pipeline_total 脚本索引
 
-这个目录把本项目里与数据处理、画图标注、建模直接相关的脚本按真实实验顺序集中起来。
+当前状态以 `docs/handoff_status.md` 为准。本目录分为三段：01–10 是既有数据与基础实验链；11–18 是 P0–P5 历史设备级探索；19–21 是最近的静态逐 signal 实验入口。
 
-真实流程是：
+## 01–10：既有数据与诊断链
 
-```text
-原始 GNSS TXT
-  -> 生成逐日志信号级特征 CSV (SignalBand / signal_id)
-  -> 画时序图
-  -> 人眼判断欺骗 TOW 区间
-  -> 更新标注配置
-  -> 生成总 processed_gnss_data.csv
-  -> 构建 train/val/test NPZ
-  -> 检查张量
-  -> 训练/推理
-```
+本次整理不改动这些脚本的结构。
 
-信号级数据规范、验证结果和常用命令见 `docs/signal_level_feature_extraction.md`。
+| 编号 | 脚本 | 作用 |
+|---:|---|---|
+| 01 | `01_generate_plot_feature_csv.py` | 从原始日志生成逐日志 plot feature CSV |
+| 02 | `02_batch_plot_feature_images.py` | 批量生成特征 PNG |
+| 03 | `03_interactive_labeling_helper.py` | 交互式列出和复核候选日志/标签 |
+| 04 | `04_build_labeled_processed_csv.py` | 从原始日志重建统一带标签 CSV |
+| 05 | `05_build_train_val_test_tensors.py` | 构建旧逐 signal 张量与 recording split |
+| 06 | `06_verify_tensor_splits.py` | 检查张量划分和泄漏 |
+| 07 | `07_train_models.py` | 训练旧逐 signal 基线 |
+| 08 | `08_inference.py` | 推理与指标输出 |
+| 09 | `09_export_validation_misclassifications.py` | 导出 validation 错分 |
+| 10 | `10_plot_validation_error_review.py` | 生成错分复核图 |
 
-## 当前建模状态与结果边界
+注意：
 
-本流程已从“逐卫星分类”扩展为“直接设备级告警”。当前设备级模型使用同一设备、同一历元的 27 维多卫星统计特征，并支持 5/15/30/64 历元因果窗口。
+- 02 的标签阴影仍来自脚本内场景级固定区间。操场动态 L15 当前权威区间是 `configs/preprocessing.yml` 中的 Session 级 `[260990, 261020]`，不能用历史 PNG 反推标签。
+- 04 和配置文件是标签变化后的正式重建入口。
+- 05 的基础接口保留给旧路线；最近的 time-block 实验使用 20。
 
-- 当前性能强基线是 `DeviceLightGBM L=30`；
-- 当前轻量神经网络候选是 `DeviceStatsDLinear L=30`；
-- 当前低虚警对照是 `DeviceStatsMLP L=5`；
-- 完整开发参考结果、模型淘汰理由和下一阶段任务见 [`../docs/experiment_progress.md`](../docs/experiment_progress.md)。
+中央 CSV 重建：
 
-**结果边界：** `output/tensors_static_cross_env` 的 test 已参与模型和窗口诊断，不再是最终独立测试。新一轮特征和模型开发必须使用 `../docs/protocols/static_session_cv_4fold/` 的锁定清单；操作规则见 [`../docs/static_session_cv_protocol.md`](../docs/static_session_cv_protocol.md)。
-
-## 00_preprocessing_config.yml
-
-来源：`configs/preprocessing_template.yml`。完成新主楼标签配置后，复制为
-`configs/preprocessing.yml` 供正式预处理使用。
-
-这是预处理和打标签的主配置。重点维护：
-
-- `paths.input_dir`
-- `paths.output_csv`
-- `device_model_map`
-- `labeling.spoofing_tow_intervals`
-- `labeling.spoofing_type_to_label`
-- `final_columns`
-
-人工看图标注后，主要就是把欺骗发生的 GPS TOW 区间写到 `labeling.spoofing_tow_intervals`。
-
-正式运行时建议同步改项目根目录的：
-
-```text
-configs/preprocessing.yml
-```
-
-因为现有脚本默认读的是根目录配置。
-
-## 01_generate_plot_feature_csv.py
-
-来源：`scripts/generate_plot_features.py`
-
-作用：扫描 `data_raw/` 下的原始 GNSS 日志，给每个 TXT 生成一个对应的 `*-plot_features.csv`，并优先按独立 `SignalID` 绘图。
-
-这些 CSV 是后续画图和人工标注的中间文件。
-
-常用命令：
-
-```bash
-python pipeline_total/01_generate_plot_feature_csv.py
-```
-
-只处理某个场景：
-
-```bash
-python pipeline_total/01_generate_plot_feature_csv.py --scenario st_L1
-```
-
-覆盖已有中间 CSV：
-
-```bash
-python pipeline_total/01_generate_plot_feature_csv.py --overwrite
-```
-
-注意：当前主数据统一位于仓库根目录 `data_raw/`。
-
-## 02_batch_plot_feature_images.py
-
-来源：`scripts/batch_plot_features.py`
-
-作用：读取 `*-plot_features.csv`，批量画出各特征的信号时序图，输出到 `output_plots/`；旧 CSV 会回退为卫星级绘图。
-
-常用命令：
-
-```bash
-python pipeline_total/02_batch_plot_feature_images.py
-```
-
-当前脚本里默认只处理 `st_L1` 和 `dy_L1`，如果要画全部场景，需要在 `main()` 里补齐：
-
-```python
-for scenario in ["st_L1", "st_L5", "st_L_15", "dy_L1", "dy_L5", "dy_L_15"]:
-    process_scenario(scenario)
-```
-
-## 03_interactive_labeling_helper.py
-
-来源：`labeling/run_labeling.py`
-
-作用：交互式画 C/N0 和 AGC，辅助人工记录欺骗开始/结束 TOW。
-
-示例：
-
-```bash
-python -m labeling.run_labeling --spoof_type dy_L1 --folder 2022.07.08semicircle
-```
-
-注意：原脚本仍带有旧路径配置。继续使用前，需将 `config.ROOT_DATA_DIR`
-改为仓库根目录的 `data_raw/`，或者直接用前两步生成的 PNG 进行人工标注。
-
-## 人工步骤：更新欺骗区间
-
-看完图后，把区间写回：
-
-```text
-configs/preprocessing.yml
-```
-
-例如：
-
-```yaml
-labeling:
-  spoofing_tow_intervals:
-    dy_L1:
-      - [263995, 264050]
-      - [264690, 264740]
-```
-
-这一步是整个流程中最关键的人工环节。
-
-## 04_build_labeled_processed_csv.py
-
-来源：`pipeline/01_preprocess.py`
-
-作用：从原始 TXT 重新解析、过滤、计算特征，并根据配置中的 TOW 区间打标签，生成总 CSV。
-
-常用命令：
-
-```bash
+```powershell
 python pipeline_total/04_build_labeled_processed_csv.py --mode full --config configs/preprocessing.yml
+```
+
+## 11–18：P0–P5 历史设备级探索
+
+这些脚本保留原位以便追溯，不是当前默认主链。
+
+| 编号 | 脚本 | 历史用途 |
+|---:|---|---|
+| 11 | `11_evaluate_device_aggregation.py` | 将逐 signal 预测聚合为设备告警 |
+| 12 | `12_generate_static_session_cv_manifests.py` | 生成静态 4-fold Session-CV 清单 |
+| 13 | `13_build_device_stats_tensors.py` | 构建设备级 27 维统计张量 |
+| 14 | `14_train_device_models.py` | 训练设备级 MLP/TCN/RNN/Linear/TSMixer |
+| 15 | `15_train_device_lightgbm.py` | 训练设备级 LightGBM |
+| 16 | `16_collect_device_experiment_results.py` | 汇总历史设备级实验 |
+| 17 | `17_generate_static_dynamic_cv_manifests.py` | 向静态 CV train 加入动态 Session |
+| 18 | `18_evaluate_device_motion_subgroups.py` | 按静态/动态子组评估设备模型 |
+
+结果与边界见 `docs/experiment_registry.md`。15/18 需要可选的 LightGBM 依赖；未安装时不应把它们当成基础环境自检入口。
+
+## 19–21：当前静态逐 signal 探索
+
+这条链复现最近的 outer-session / inner-time-block W5 实验。它仍是探索协议，不是最终模型。
+
+### 19_generate_static_timeblock_protocol.py
+
+输入当前中央 CSV 和静态 recording 清单。对每个静态 recording 生成一个 outer fold：完整 recording 作为 test，其余 recording 在连续 canonical UTC 时间块内划分 train/validation，并在边界加入 W-1 guard。
+
+```powershell
+python pipeline_total/19_generate_static_timeblock_protocol.py
 ```
 
 默认输出：
 
 ```text
-output/processed_gnss_data.csv
+output/protocols/static_time_block_outer_v1/
+  fold_assignment.csv
+  fold_summary.csv
+  protocol_metadata.json
+  fold_N/
+    recording_split_manifest.csv
+    time_block_manifest.csv
+    epoch_split_manifest.csv
+    recording_summary.csv
 ```
 
-若需要自定义输出位置，可以复制配置并修改：
+`epoch_split_manifest.csv` 是权威逐历元划分。生成器允许任意不少于 2 个 reviewed 静态 recording，不再把当前 8 个 Session 写死。
 
-```yaml
-paths:
-  input_dir: './data_raw'
-  output_csv: './output/processed_gnss_data.csv'
+### 20_build_static_timeblock_tensors.py
+
+按单个 outer fold 构建配对 raw/stats 张量。窗口不会跨 split、guard、segment 或 source 内大于 2 秒的断档；scaler 只用 train 拟合。
+
+```powershell
+python pipeline_total/20_build_static_timeblock_tensors.py `
+  --outer-manifest output/protocols/static_time_block_outer_v1/fold_1/recording_split_manifest.csv `
+  --block-manifest output/protocols/static_time_block_outer_v1/fold_1/epoch_split_manifest.csv `
+  --output-dir output/tensors/static_timeblock_outer_v1/fold_1 `
+  --time-steps 5
 ```
 
-然后运行：
-
-```bash
-python pipeline_total/04_build_labeled_processed_csv.py --mode full --config your_config.yml
-```
-
-## 05_build_train_val_test_tensors.py
-
-来源：`pipeline/02_build_tensors.py`
-
-作用：把 `processed_gnss_data.csv` 构造成训练用 NPZ 张量，默认使用 `signal_id` 作为空间槽位并排除未审查标签。每个输入由截至当前时刻的 5 个历元组成，目标是窗口末端当前历元的标签，只有末端出现的信号参与损失和指标。训练/验证/测试以 `Environment + Scenario + Session` 为不可拆分的真实录制单元，同一场实验的多设备数据不会落入不同集合；每个设备日志仍生成独立张量，避免不同接收机的同名 `signal_id` 相互覆盖。划分会在数据允许时保证每个集合都含静态和动态录制。每次运行会输出 `recording_split_manifest.csv` 供复现与审计。
-
-常用命令：
-
-```bash
-python pipeline_total/05_build_train_val_test_tensors.py --csv output/processed_gnss_data.csv --output_dir output/tensors_mixed --scenario mixed --max-signals 128
-```
-
-在首次构建张量前，先只生成并检查真实录制级划分清单。这样做是为了确认同一场实验的多设备数据没有跨集合泄漏：
-
-```bash
-python pipeline_total/05_build_train_val_test_tensors.py --csv output/processed_gnss_data.csv --output_dir output/tensors_mixed --scenario mixed --split-only
-```
-
-检查 `output/tensors_mixed/recording_split_manifest.csv` 后，再去掉 `--split-only` 生成 NPZ。
-
-静态/动态分别构建：
-
-```bash
-python pipeline_total/05_build_train_val_test_tensors.py --csv output/processed_gnss_data.csv --output_dir output/tensors_static --scenario static
-python pipeline_total/05_build_train_val_test_tensors.py --csv output/processed_gnss_data.csv --output_dir output/tensors_dynamic --scenario dynamic
-```
-
-## 06_verify_tensor_splits.py
-
-来源：`scripts/verify_data.py`
-
-作用：检查 `train.npz / val.npz / test.npz` 的张量形状、二分类标签分布，并读取 `recording_split_manifest.csv` 验证真实录制单元没有重复分配到不同集合。
-
-常用命令：
-
-```bash
-python pipeline_total/06_verify_tensor_splits.py --npz_dir output/tensors_mixed
-```
-
-## 07_train_models.py
-
-来源：`pipeline/03_train.py`
-
-作用：训练项目自有的逐信号轻量 baseline。每条有效 `signal_id` 的 5 秒、7 特征窗口独立输出正常/欺骗 logits；同一设备窗口中的填充槽位会由 `mask` 排除。
-
-首轮可选模型：
+输出结构：
 
 ```text
-signal_mlp：5 秒 x 7 特征直接展平，作为最低复杂度参考
-signal_gru：保留 5 秒时间顺序的轻量 GRU，作为时序参考
+fold_1/
+  raw/{train,val,test}.npz
+  raw/feature_names.json
+  stats/{train,val,test}.npz
+  stats/feature_names.json
 ```
 
-先在未训练状态做干运行。此命令只读取 train/val，并验证形状、掩码与前向传播，不更新权重、不生成 checkpoint、也不读取 test：
+raw 张量为兼容 builder 仍保存 7 列；训练器按 `feature_names.json` 只选择 5 列，排除 `Cn0DbHz_dt` 和 `Cn0DbHz_std`。stats 为逐 `signal_id` 的 19 维窗口统计。
 
-```bash
-C:\Users\Asus\AppData\Local\Microsoft\WindowsApps\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\python.exe pipeline_total/07_train_models.py --data-dir output/tensors_mixed --model signal_mlp --dry-run
-```
+### 21_train_static_signal_fusion.py
 
-模型结构和超参数确定后，才运行正式训练。训练过程只使用 train，依据 val 的 Macro-F1 早停并保存最佳权重：
+训练 raw 因果 TCN/LSTM + stats MLP 双分支。脚本会校验 raw/stats 的特征名、shape、mask、标签和设备元数据是否一致。
 
-常用命令：
-
-```bash
-C:\Users\Asus\AppData\Local\Microsoft\WindowsApps\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\python.exe pipeline_total/07_train_models.py --data-dir output/tensors_mixed --output-dir output/training/signal_mlp --model signal_mlp --epochs 30
-```
-
-只有在模型和超参数均已锁定后，才显式读取 test 并记录最终指标：
-
-```bash
-C:\Users\Asus\AppData\Local\Microsoft\WindowsApps\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\python.exe pipeline_total/07_train_models.py --data-dir output/tensors_mixed --output-dir output/training/signal_mlp --model signal_mlp --test-only
-```
-
-张量接口、模型扩展方式、测试集使用边界和 TSLib 适配原则见 `docs/model_training_framework.md`。
-
-张量以连续 5 个历元构成因果输入窗口，标签固定为窗口末端当前历元的信号级 `Label`；窗口内先前历元只作为历史上下文。重建张量后，旧 checkpoint 及其指标不能与新标签语义下的结果混用。
-
-## 08_inference.py
-
-来源：`pipeline/04_inference.py`
-
-作用：历史模型接口的 CSV 推理脚本。
-
-**当前状态：** 该脚本尚未适配 `signal_mlp / signal_gru` checkpoint，不可用于本次新 baseline。原因是新模型输出逐信号概率，而部署推理还需先在验证集确定多信号设备级报警聚合规则。完成 baseline 选择与报警规则设计后，再单独适配该脚本；在此之前不得基于它形成部署性能结论。
-
-示例：
-
-```bash
-python pipeline_total/08_inference.py --model_path output/best_model.pth --csv your_data.csv --output_csv predictions.csv
-```
-
-## 09_export_validation_misclassifications.py
-
-来源：`pipeline_total/09_export_validation_misclassifications.py`
-
-**何时运行：** 当前开发协议下，某个模型完成训练并保存最佳 validation checkpoint 后，且在修改特征、窗口长度、划分或开始任何 test 评估之前。
-
-**为什么运行：** 导出 validation 集的逐信号错分样本，优先检查错分是否集中在少数 Session、设备、TOW 区间或某类信号。脚本会依据锁定的 `recording_split_manifest.csv` 重建窗口与信号槽位，并严格核对重建的 `mask` 和 `Label` 是否与 `val.npz` 一致；不一致时会拒绝生成 CSV，防止预测结果与原始数据行错位。该脚本不会读取 `test.npz`。
-
-当前 Tiny Transformer 的示例：
+先做轻量检查：
 
 ```powershell
-$PY = "C:\Users\Asus\AppData\Local\Microsoft\WindowsApps\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\python.exe"
-
-& $PY pipeline_total\09_export_validation_misclassifications.py `
-  --data-dir output\tensors_mixed `
-  --csv output\processed_gnss_data.csv `
-  --model-dir output\training\signal_transformer_tiny_current_protocol `
-  --model signal_transformer_tiny
-```
-
-输出写入对应模型目录：
-
-```text
-val_misclassifications_<model>.csv
-val_misclassifications_<model>_summary.csv
-val_misclassifications_<model>_by_recording.csv
-val_misclassifications_<model>_by_source_log.csv
-val_misclassifications_<model>_by_signal_band.csv
-val_misclassifications_<model>_by_tow.csv
-```
-
-主 CSV 仅包含 false positive 和 false negative，字段包括窗口起止时间、当前 TOW、录制环境、Session、设备、来源日志、`signal_id`、真实/预测标签、欺骗概率及 7 项当前历元特征。
-
-四个汇总 CSV 分别用于定位错误集中在哪个录制单元、哪个设备源日志、哪个信号频段、哪个当前 TOW。它们基于完整 validation 预测计算 TP、TN、FP、FN、Recall、漏检率、FAR 与总体错误率，不能只按错分主 CSV 的行数推断比例。
-
-### 已锁定模型的测试诊断
-
-当且仅当模型、特征和设备告警规则已经锁定后，可使用 `--split test` 导出正式测试集错分；该步骤只用于解释结果，不能再依据它调整模型或阈值：
-
-```powershell
-& $PY pipeline_total\09_export_validation_misclassifications.py `
-  --data-dir output\tensors_static_cross_env `
-  --csv output\processed_gnss_data.csv `
-  --model-dir output\training\signal_lstm_static_cross_env `
-  --model signal_lstm `
-  --split test
-```
-
-未指定 `--split` 时默认导出 validation 错分；文件名前缀对应为 `val_` 或 `test_`，避免覆盖不同集合的诊断结果。
-
-## 10_plot_validation_error_review.py
-
-来源：`pipeline_total/10_plot_validation_error_review.py`
-
-**何时运行：** `09_export_validation_misclassifications.py` 已定位到某个高漏检 validation Session 后。
-
-**为什么运行：** 将该录制中每台设备的真实欺骗标签、多信号预测概率聚合、C/N0 分位数和 AGC/C/N0 变化率放在同一张图中，判断漏检是否只出现在标签边界，或是否贯穿欺骗区间内部。脚本仍只读取 validation 数据。
-
-```powershell
-& $PY pipeline_total\10_plot_validation_error_review.py `
-  --data-dir output\tensors_mixed `
-  --csv output\processed_gnss_data.csv `
-  --model-dir output\training\signal_transformer_tiny_current_protocol `
-  --model signal_transformer_tiny `
-  --scenario dy_L_15 `
-  --session "2025.07.30.08.26_2025.07.30.08.32（动态L1+L5）"
-```
-
-输出目录中包含每台设备的 PNG 复核图和 `device_epoch_prediction_summary.csv`，后者保留了绘图前的设备级概率与特征统计，便于进一步筛选 TOW 区间。
-
-## 13_build_device_stats_tensors.py
-
-来源：`pipeline_total/13_build_device_stats_tensors.py`
-
-**何时运行：** 逐卫星模型在设备级告警上出现大量漏检，需要测试“设备内多卫星联合特征”时。该步骤重新构建设备级张量，不会改动逐卫星张量或已有 checkpoint。
-
-**为什么运行：** 每个设备当前历元汇总全部有效卫星的 6 项连续特征中位数、标准差、P10、P90，以及可见卫星数、L1/L5 卫星比例，形成 27 维设备状态；连续 5 个历元作为因果窗口。设备真值为该历元任一有效卫星真实标签为 1。所有归一化统计量只由 train 设备历元计算。
-
-首次与 `static_cross_env_v1` 对比时，复用其锁定录制划分：
-
-```powershell
-& $PY pipeline_total\13_build_device_stats_tensors.py `
-  --csv output\processed_gnss_data.csv `
-  --split-manifest output\tensors_static_cross_env\recording_split_manifest.csv `
-  --output-dir output\device_tensors_static_cross_env
-```
-
-输出中的 `train.npz / val.npz / test.npz` 每行代表一个设备窗口，`*_metadata.csv` 可用于按录制和设备解释结果。
-
-## 14_train_device_models.py
-
-来源：`pipeline_total/14_train_device_models.py`
-
-**何时运行：** 第 13 步完成且先通过干运行后。`device_stats_mlp` 是最低复杂度对照；`device_stats_tcn`、`device_stats_depthwise_cnn` 分别提供标准和深度可分离的因果卷积；`device_stats_nlinear`、`device_stats_dlinear` 是趋势/残差线性分类对照；`device_stats_tsmixer` 在整个历史窗口内交替混合时间维和特征维；GRU、LSTM 用于补充循环时序对照。默认隐藏层为 24。
-
-**为什么运行：** 该模型直接输出设备告警，训练目标与部署目标一致，不依赖逐卫星阈值或多数投票。训练仅使用 train，早停仅查看 val；未锁定前严禁读取 test。
-
-先干运行：
-
-```powershell
-& $PY pipeline_total\14_train_device_models.py `
-  --data-dir output\device_tensors_static_cross_env `
-  --output-dir output\training\device_stats_gru_static_cross_env `
-  --model device_stats_gru `
+python pipeline_total/21_train_static_signal_fusion.py `
+  --data-dir output/tensors/static_timeblock_outer_v1/fold_1 `
+  --output-dir output/training/static_timeblock_outer_v1/fold_1/tcn `
+  --encoder tcn `
+  --hidden-dim 16 `
+  --dropout 0.3 `
+  --weight-decay 0.001 `
   --dry-run
 ```
 
-干运行通过后再正式训练：
+正式训练：
 
 ```powershell
-& $PY pipeline_total\14_train_device_models.py `
-  --data-dir output\device_tensors_static_cross_env `
-  --output-dir output\training\device_stats_gru_static_cross_env `
-  --model device_stats_gru `
+python pipeline_total/21_train_static_signal_fusion.py `
+  --data-dir output/tensors/static_timeblock_outer_v1/fold_1 `
+  --output-dir output/training/static_timeblock_outer_v1/fold_1/tcn `
+  --encoder tcn `
+  --hidden-dim 16 `
+  --dropout 0.3 `
+  --weight-decay 0.001 `
   --epochs 30 `
   --batch-size 256 `
   --patience 6 `
   --seed 2026
 ```
 
-当且仅当模型结构、窗口、特征和阈值方案锁定后，才读取对应目录的 test：
+checkpoint 锁定后再读取 test：
 
 ```powershell
-& $PY pipeline_total\14_train_device_models.py `
-  --data-dir output\device_tensors_static_cross_env_l30 `
-  --output-dir output\training\device_stats_dlinear_static_cross_env_l30 `
-  --model device_stats_dlinear `
+python pipeline_total/21_train_static_signal_fusion.py `
+  --data-dir output/tensors/static_timeblock_outer_v1/fold_1 `
+  --output-dir output/training/static_timeblock_outer_v1/fold_1/tcn `
+  --encoder tcn `
   --test-only
 ```
 
-## 15_train_device_lightgbm.py
+`--test-only` 会从 checkpoint 恢复 encoder、hidden、dropout 和输入维度，并校验当前张量特征；不会信任不一致的命令行网络参数。
 
-来源：`pipeline_total/15_train_device_lightgbm.py`
+## 生成物策略
 
-**何时运行：** 需要验证设备统计窗口是否已经可以由非神经树模型充分区分时。LightGBM 将同一设备的因果窗口展平为结构化输入，作为深度模型的工程化对照。
-
-**为什么运行：** 若 LightGBM 接近或超过神经模型，说明收益主要来自统计特征；若明显落后，则说明时序表征仍有必要。默认限制叶子数、深度和树数，并记录模型文件大小，避免将大树集误认为轻量部署模型。
-
-先干运行：
-
-```powershell
-& $PY pipeline_total\15_train_device_lightgbm.py `
-  --data-dir output\device_tensors_static_cross_env_l15 `
-  --output-dir output\training\device_lightgbm_static_cross_env_l15 `
-  --dry-run
-```
-
-正式训练与已锁定模型的 test 评估示例：
-
-```powershell
-& $PY pipeline_total\15_train_device_lightgbm.py `
-  --data-dir output\device_tensors_static_cross_env_l30 `
-  --output-dir output\training\device_lightgbm_static_cross_env_l30 `
-  --seed 2026
-
-& $PY pipeline_total\15_train_device_lightgbm.py `
-  --data-dir output\device_tensors_static_cross_env_l30 `
-  --output-dir output\training\device_lightgbm_static_cross_env_l30 `
-  --test-only
-```
-
-## 16_collect_device_experiment_results.py
-
-来源：`pipeline_total/16_collect_device_experiment_results.py`
-
-**何时运行：** 每完成一批窗口或模型实验后运行。它不训练、不读取原始 CSV，只汇总已有训练目录中的 validation/test 指标。
-
-**为什么运行：** 统一输出模型、窗口、Recall、FAR、Macro-F1 和模型大小，避免人工抄录结果或将不同实验目录混淆。筛选时应先比较 validation；旧 test 仅作为历史参考。
-
-```powershell
-& $PY pipeline_total\16_collect_device_experiment_results.py `
-  --training-root output\training `
-  --output-csv output\experiment_summaries\device_model_results.csv
-```
-
-## 17_generate_static_dynamic_cv_manifests.py
-
-来源：`pipeline_total/17_generate_static_dynamic_cv_manifests.py`
-
-**何时运行：** 已有静态多环境 Session-CV 清单，且要测试“只向训练集加入动态 Session 是否改善静态测试”时运行。
-
-**为什么运行：** 保持每折静态 train/val/test 不变，仅把既有 mixed 清单中标记为 `train` 的动态 Session 追加到训练集，避免手工复制造成 Session 泄漏。该协议的 val/test 仍为静态，不是统一静态+动态检测任务。
-
-```powershell
-& $PY pipeline_total\17_generate_static_dynamic_cv_manifests.py
-```
-
-## 18_evaluate_device_motion_subgroups.py
-
-来源：`pipeline_total/18_evaluate_device_motion_subgroups.py`
-
-**何时运行：** 统一静态+动态模型完成 `--test-only` 后运行。
-
-**为什么运行：** 除总体 test 外，按 `Scenario` 分别计算静态和动态设备窗口的 Macro-F1、Recall、FAR，避免混合 test 的总体分数掩盖动态检测不足。
-
-```powershell
-& $PY pipeline_total\18_evaluate_device_motion_subgroups.py `
-  --data-dir output\device_tensors_multi_env_static_dynamic_mixed_l30 `
-  --model-dir output\training\device_lightgbm_multi_env_static_dynamic_mixed_l30
-```
-
-## 11_evaluate_device_aggregation.py
-
-来源：`pipeline_total/11_evaluate_device_aggregation.py`
-
-**何时运行：** 已完成逐信号模型训练，需要确认“少数卫星误报或漏报”是否会转化为实际设备报警错误时。
-
-**为什么运行：** 将同一设备当前历元的全部有效信号聚合为一个设备告警。对于 `st_L1` 或 `st_L5` 单频欺骗，未受攻击频段的信号应保持真实标签 0，因此同一设备历元的逐信号真值出现 0/1 混合是预期现象；设备级真值定义为“任一有效信号真实标签为 1”，并在输出中记录混合标签设备历元数量。脚本再计算设备级 Accuracy、Macro-F1、Precision、Recall 和 FAR；默认多数投票，即只有预测为欺骗的信号数超过有效信号的一半时才报警。它只读取 validation 数据。
-
-```powershell
-& $PY pipeline_total\11_evaluate_device_aggregation.py `
-  --data-dir output\tensors_static_cross_env `
-  --csv output\processed_gnss_data.csv `
-  --model-dir output\training\signal_lstm_static_cross_env `
-  --model signal_lstm `
-  --rule majority
-```
-
-多数投票是首个部署聚合基线，并非最终规则。只在 validation 集比较 `any`、`k_of_n` 和 `ratio` 规则，锁定模型和规则后，才允许显式读取测试集：
-
-```powershell
-& $PY pipeline_total\11_evaluate_device_aggregation.py `
-  --data-dir output\tensors_static_cross_env `
-  --csv output\processed_gnss_data.csv `
-  --model-dir output\training\signal_lstm_static_cross_env `
-  --model signal_lstm `
-  --rule majority `
-  --split test
-```
-
-测试结果会写入 `device_level_test/`，与 validation 的 `device_level_val/` 分开保存。不能只看 Accuracy，仍须同时检查攻击 Recall、FAR 和后续的检测时延。
+协议 CSV、NPZ、checkpoint、metrics、plots 和 smoke 目录都写入 `output/`，默认可重建且不提交 Git。当前只长期保留中央 CSV、审计、标签复核证据和必要错分明细；详情见 `output/README.md`。

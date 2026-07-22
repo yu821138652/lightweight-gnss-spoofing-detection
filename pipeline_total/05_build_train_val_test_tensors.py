@@ -768,6 +768,8 @@ def main():
                         help='Feature subset preset for robustness/ablation tensor builds')
     parser.add_argument('--max-signals', type=int, default=128,
                         help='Maximum independent signals per window; overflow is an error, never silently truncated.')
+    parser.add_argument('--time-steps', type=int, default=5,
+                        help='Number of consecutive receiver epochs in each causal window.')
     parser.add_argument('--include-unreviewed', action='store_true',
                         help='Include rows whose LabelStatus is not reviewed. Disabled by default.')
     parser.add_argument('--split-only', action='store_true',
@@ -775,12 +777,15 @@ def main():
     parser.add_argument('--split-manifest', type=str, default=None,
                         help='Locked recording-level train/val/test manifest to apply instead of automatic splitting.')
     args = parser.parse_args()
-    global FEATURE_COLS, MAX_SIGNALS
+    global FEATURE_COLS, MAX_SIGNALS, TIME_STEPS
     FEATURE_COLS = FEATURE_PRESETS[args.feature_preset]
     if args.max_signals <= 0:
         parser.error('--max-signals must be positive')
     MAX_SIGNALS = args.max_signals
-    logging.info(f"Feature preset: {args.feature_preset}; columns={FEATURE_COLS}")
+    if args.time_steps < 2:
+        parser.error('--time-steps must be at least 2')
+    TIME_STEPS = args.time_steps
+    logging.info(f"Feature preset: {args.feature_preset}; columns={FEATURE_COLS}; time_steps={TIME_STEPS}")
     
     # =============================================
     # 1. 加载配置文件或命令行参数
@@ -814,6 +819,9 @@ def main():
         devices = args.devices
     
     Path(output_dir).mkdir(parents=True, exist_ok=True)
+    with open(Path(output_dir) / 'tensor_metadata.json', 'w', encoding='utf-8') as f:
+        json.dump({'time_steps': TIME_STEPS, 'max_signals': MAX_SIGNALS,
+                   'feature_columns': FEATURE_COLS, 'normalization': args.norm_mode}, f, indent=2)
     
     # =============================================
     # 2. 加载数据

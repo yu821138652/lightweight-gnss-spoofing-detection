@@ -1,5 +1,7 @@
 # 信号级 GNSS 特征提取流程
 
+> 当前标签、数据快照和实验边界以 [handoff_status.md](handoff_status.md) 为准。本文只描述可重建的数据语义和脚本接口。
+
 ## 方案结论
 
 项目当前规范化处理数据目录为 `data_csv/`。数据以**独立信号**为基本单位，
@@ -60,7 +62,7 @@ python scripts/split_csv_by_sv_id.py --group-column signal_id --sort-columns TOW
 仅使用已审查标签构建训练张量：
 
 ```powershell
-python pipeline_total/05_build_train_val_test_tensors.py --csv output/processed_gnss_data.csv --output_dir output/tensor_data --max-signals 128
+python pipeline_total/05_build_train_val_test_tensors.py --csv output/processed_gnss_data.csv --output-dir output/tensor_data --max-signals 128
 ```
 
 张量构建器只会在旧 CSV 缺少 `signal_id` 时回退到 `sv_id`。该回退模式仅用于
@@ -71,10 +73,11 @@ python pipeline_total/05_build_train_val_test_tensors.py --csv output/processed_
 本次全量重建得到：
 
 ```text
-源 CSV：132 个
-源数据行：3,175,866 行
+源镜像 CSV：132 个
+源镜像数据行：3,175,866 行（逐日志派生 CSV 的历史快照）
+当前统一 processed CSV：约 2,139,284 条 reviewed 信号级记录
 信号级拆分文件：7,044 个
-拆分后总行数：3,175,866 行
+拆分后总行数：3,175,866 行（镜像 CSV 口径）
 ```
 
 审计结果：

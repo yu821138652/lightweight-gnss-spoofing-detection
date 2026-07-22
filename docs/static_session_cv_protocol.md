@@ -1,5 +1,7 @@
 # 静态数据 Session 级交叉验证协议
 
+> 历史协议说明：本文对应 P3/P4 的静态 4-fold Session-CV。当前最近的逐 signal outer-session / inner-time-block 探索请阅读 [handoff_status.md](handoff_status.md) 和 `pipeline_total/19–21`。
+
 ## 目的
 
 当前 `static_cross_env_v1` 已完成一次固定的“新主楼训练、操场测试”评估。其测试集已经用于正式结果解释，后续不能继续以该测试集选择特征、模型或设备告警规则。

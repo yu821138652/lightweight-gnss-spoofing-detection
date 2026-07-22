@@ -36,11 +36,19 @@ labeling:
   scenario_fallback_environments:
     - playground
 
-  # Session-specific labels take precedence. Add every reviewed new_building
-  # recording here; an empty interval list means the session was reviewed as
-  # normal. Unlisted new_building sessions are emitted with LabelStatus=
-  # needs_review and must not enter formal training.
+  # Session-specific labels take precedence over legacy scenario intervals.
+  # An empty interval list means the session was reviewed as normal. Unlisted
+  # new_building sessions are emitted with LabelStatus=needs_review and must
+  # not enter formal training.
   session_spoofing_tow_intervals:
+    playground:
+      dy_L_15:
+        # Multi-reviewer correction: the original scenario fallback
+        # [260970, 261040] was judged substantially wider than the observable
+        # dual-band spoofing response in this recording.
+        "2025.07.30.08.26_2025.07.30.08.32（动态L1+L5）":
+          status: reviewed
+          intervals: [[260990, 261020]]
     new_building:
       st_L1:
         "2025.07.29.19.22_新主楼":

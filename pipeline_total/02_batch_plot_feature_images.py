@@ -133,7 +133,10 @@ def process_scenario(scenario: str, input_base: str = 'data_raw',
     spoof_intervals = SPOOFING_INTERVALS.get(scenario, [])
     
     # 找到所有 CSV 文件
-    csv_files = list(input_path.rglob("*-plot_features.csv"))
+    csv_files = sorted(input_path.rglob("*-plot_features.csv"))
+    csv_count_by_parent = {}
+    for csv_file in csv_files:
+        csv_count_by_parent[csv_file.parent] = csv_count_by_parent.get(csv_file.parent, 0) + 1
     print(f"\n{scenario}: Found {len(csv_files)} CSV files")
     
     total_plots = len(csv_files) * len(FEATURES)
@@ -152,6 +155,11 @@ def process_scenario(scenario: str, input_base: str = 'data_raw',
             # 计算相对路径
             rel_path = csv_file.relative_to(input_path)
             out_dir = output_path / rel_path.parent
+            # Some playground device folders contain multiple source logs.
+            # Keep their plots separate instead of overwriting the same seven
+            # feature filenames in the shared device directory.
+            if csv_count_by_parent[csv_file.parent] > 1:
+                out_dir = out_dir / csv_file.stem
             
             # 为每个特征生成图
             for feat_col, feat_label in FEATURES:

@@ -131,6 +131,46 @@ class SignalLSTM(nn.Module):
         return self.classifier(hidden[-1]).reshape(batch_size, signal_count, 2)
 
 
+class SignalRawStatsFusion(nn.Module):
+    """Fuse a true raw temporal encoder with an MLP statistics branch."""
+
+    def __init__(self, raw_input_dim: int, stats_input_dim: int, encoder: str = "lstm", hidden_dim: int = 32, dropout: float = 0.1):
+        super().__init__()
+        self.raw_input_dim = raw_input_dim
+        self.stats_input_dim = stats_input_dim
+        self.encoder_name = encoder
+        if encoder == "lstm":
+            self.raw_encoder = nn.LSTM(raw_input_dim, hidden_dim, batch_first=True)
+        elif encoder == "tcn":
+            self.raw_encoder = nn.Sequential(
+                CausalConv1d(raw_input_dim, hidden_dim, kernel_size=3), nn.GELU(), nn.Dropout(dropout),
+                CausalConv1d(hidden_dim, hidden_dim, kernel_size=3, dilation=2), nn.GELU(),
+            )
+        else:
+            raise ValueError(f"Unknown raw encoder: {encoder}")
+        self.stats_encoder = nn.Sequential(
+            nn.LayerNorm(stats_input_dim), nn.Linear(stats_input_dim, hidden_dim), nn.GELU(), nn.Dropout(dropout)
+        )
+        self.classifier = nn.Sequential(
+            nn.LayerNorm(hidden_dim * 2), nn.Linear(hidden_dim * 2, hidden_dim), nn.GELU(),
+            nn.Dropout(dropout), nn.Linear(hidden_dim, 2),
+        )
+
+    def forward(self, raw_x: torch.Tensor, stats_x: torch.Tensor) -> torch.Tensor:
+        batch_size, signal_count, _, raw_dim = raw_x.shape
+        if raw_dim != self.raw_input_dim or stats_x.shape[-1] != self.stats_input_dim or stats_x.shape[-2] != 1:
+            raise ValueError(f"Unexpected fusion inputs: raw={tuple(raw_x.shape)} stats={tuple(stats_x.shape)}")
+        raw = raw_x.reshape(batch_size * signal_count, raw_x.shape[2], raw_dim)
+        if self.encoder_name == "lstm":
+            _, (hidden, _) = self.raw_encoder(raw)
+            raw_embedding = hidden[-1]
+        else:
+            raw_embedding = self.raw_encoder(raw.transpose(1, 2))[:, :, -1]
+        stats = stats_x.reshape(batch_size * signal_count, self.stats_input_dim)
+        fused = torch.cat([raw_embedding, self.stats_encoder(stats)], dim=-1)
+        return self.classifier(fused).reshape(batch_size, signal_count, 2)
+
+
 class SignalTransformerTiny(nn.Module):
     """One-layer causal Transformer kept small enough for edge-model comparison."""
 

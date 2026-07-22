@@ -96,8 +96,8 @@ cd lightweight-gnss-spoofing-detection
 
 ```text
 README.md
-docs/project_mainline.md
-docs/experiment_plan.md
+docs/handoff_status.md
+docs/experiment_registry.md
 docs/data_inventory.md
 ```
 

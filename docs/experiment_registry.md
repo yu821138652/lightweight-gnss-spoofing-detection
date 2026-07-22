@@ -1,4 +1,6 @@
-# 实验台账
+# P0–P5 历史实验台账
+
+> 状态说明（2026-07-22）：本文记录 2026-07-18 前的设备级 P0–P5 探索，用于追溯实验演进，不代表当前已锁定模型或最新推进路线。当前数据问题、逐 signal 探索和交接结论请以 [handoff_status.md](handoff_status.md) 为准。
 
 更新时间：2026-07-18
 
@@ -155,7 +157,9 @@ P5 的关键发现：动态 Recall 低于静态；且 L5-only 静态攻击在不
 | P5 已证明当前流程可用一个模型同时输出静态、动态设备告警。 | P5 的 0.7944 不能与 P3/P4 的纯静态 F1 做性能高低比较。 |
 | 当前主要风险来自跨环境、设备、频段和 Session 时段的分布变化。 | 不能把所有 test 下降简单归因为“模型容量不够”。 |
 
-## 下一步的最小清晰路线
+## 当时拟议但未锁定的后续路线
+
+以下内容保留用于理解 P0–P5 当时的推进思路，不是 2026-07-22 之后的当前计划；当前建议以 [handoff_status.md](handoff_status.md) 为准。
 
 1. 将每个基础特征拆为 L1 与 L5 独立统计量，并加入相对滚动基线、短期变化量等因果特征，优先解决 L5-only 信号被 L1 稀释的问题。
 2. 用**锁定的新特征版本**在 P3/P4 的四折清单上复验 LightGBM `L=30`、DLinear `L=30`、MLP `L=5`；只报告同一协议的均值和标准差。
@@ -164,7 +168,6 @@ P5 的关键发现：动态 Recall 低于静态；且 L5-only 静态攻击在不
 
 ## 相关文件
 
-- [实验进展](experiment_progress.md)：按时间记录过程与分析。
+- [当前交接状态](handoff_status.md)：当前数据问题、逐 signal 探索与后续建议。
 - [静态四折 Session-CV 规则](static_session_cv_protocol.md)：P3 的复现与防泄漏规则。
-- [实验计划](experiment_plan.md)：后续实验方向。
 - `pipeline_total/16_collect_device_experiment_results.py`：从本地 `output/training/` 自动汇总已有指标，生成的 CSV 不提交。
