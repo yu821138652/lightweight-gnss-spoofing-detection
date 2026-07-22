@@ -158,6 +158,14 @@ def expected_labels(frame: pd.DataFrame, intervals: list[tuple[float, float]], b
     return expected
 
 
+def intervals_in_session(
+    intervals: list[tuple[float, float]], tow_min: float, tow_max: float
+) -> list[tuple[float, float]]:
+    """Keep only configured intervals that can affect this recording's rows."""
+
+    return [(start, end) for start, end in intervals if start <= tow_max and end >= tow_min]
+
+
 def load_session(paths: list[Path]) -> pd.DataFrame:
     frames: list[pd.DataFrame] = []
     requested_columns = [*METADATA_COLUMNS, *(column for column, _ in FEATURES)]
@@ -287,6 +295,11 @@ def render_dashboard(
     dpi: int,
 ) -> None:
     devices = sorted(frame["DeviceName"].dropna().unique())
+    tow_min = float(frame["TOW"].min())
+    tow_max = float(frame["TOW"].max())
+    displayed_intervals = intervals_in_session(intervals, tow_min, tow_max)
+    padding = max(1.0, (tow_max - tow_min) * 0.015)
+    x_limits = (tow_min - padding, tow_max + padding)
     rows, columns = len(FEATURES) + 1, len(devices)
     figure, axes = plt.subplots(
         rows,
@@ -296,10 +309,10 @@ def render_dashboard(
         figsize=(max(14, 4.2 * columns), max(17, 2.0 * rows)),
     )
     bands = target_bands(identity.scenario, _CONFIG)
-    label_text = ", ".join(f"[{start:g}, {end:g}]" for start, end in intervals) or "none"
+    label_text = ", ".join(f"[{start:g}, {end:g}]" for start, end in displayed_intervals) or "none in this recording"
     figure.suptitle(
         f"Label review | {identity.environment} / {identity.scenario} / {identity.session}\n"
-        f"formal label: {label_text} | status={status} | source={source} | target bands={sorted(bands) or 'none'}",
+        f"applicable formal label: {label_text} | status={status} | source={source} | target bands={sorted(bands) or 'none'}",
         fontsize=12,
     )
     for column, device in enumerate(devices):
@@ -311,13 +324,15 @@ def render_dashboard(
             f"{device}\n{device_frame['plot_signal_id'].nunique()} plotted signals, {len(device_frame):,} rows",
             fontsize=9,
         )
-        draw_label_timeline(axes[0, column], device_frame, intervals, bands)
+        draw_label_timeline(axes[0, column], device_frame, displayed_intervals, bands)
         for row, (feature, label) in enumerate(FEATURES, start=1):
             axis = axes[row, column]
-            draw_feature(axis, device_frame, feature, intervals, target_signals)
+            draw_feature(axis, device_frame, feature, displayed_intervals, target_signals)
             if column == 0:
                 axis.set_ylabel(label, fontsize=8)
             axis.tick_params(axis="both", labelsize=7)
+        for axis in axes[:, column]:
+            axis.set_xlim(*x_limits)
         axes[-1, column].set_xlabel("TOW (s)", fontsize=8)
     figure.text(
         0.01,
@@ -366,8 +381,8 @@ th { background: #edf2f5; position: sticky; top: 0; } .label { color: #b42318; f
 a { color: #075985; } p { max-width: 1050px; line-height: 1.5; }
 </style></head><body>
 <h1>GNSS Session Label Review</h1>
-<p>Each dashboard aligns all devices and all seven signal-level features for one complete Session. The red span is resolved from the current Session-level label configuration. A non-zero mismatch count means the local mirrored CSV must be rebuilt before it is used for training.</p>
-<table><thead><tr><th>Environment</th><th>Scenario</th><th>Session</th><th>Status</th><th>Source</th><th>Formal intervals</th><th>Review priority</th><th>Devices</th><th>CSV / expected positive rows</th><th>CSV mismatch rows</th><th>Files</th></tr></thead>
+<p>Each dashboard aligns all devices and all seven signal-level features for one complete Session. The red span is resolved from the current label configuration, but only intervals overlapping the recording's actual TOW range are shown. A non-zero mismatch count means the local mirrored CSV must be rebuilt before it is used for training.</p>
+<table><thead><tr><th>Environment</th><th>Scenario</th><th>Session</th><th>Status</th><th>Source</th><th>Applicable intervals</th><th>Review priority</th><th>Devices</th><th>CSV / expected positive rows</th><th>CSV mismatch rows</th><th>Files</th></tr></thead>
 <tbody>""" + "\n".join(rows) + "</tbody></table></body></html>"
     (output_dir / "index.html").write_text(document, encoding="utf-8")
 
@@ -439,6 +454,9 @@ def main() -> None:
     for identity in tqdm(sorted(grouped, key=lambda value: (value.environment, value.scenario, value.session)), desc="Rendering sessions"):
         frame = load_session(grouped[identity])
         intervals, formal_status, formal_source = resolve_formal_label(identity, _CONFIG)
+        displayed_intervals = intervals_in_session(
+            intervals, float(frame["TOW"].min()), float(frame["TOW"].max())
+        )
         expected = expected_labels(frame, intervals, target_bands(identity.scenario, _CONFIG))
         observed = (frame["Label"].fillna(0).astype(int).to_numpy() > 0).astype(np.int8)
         mismatch_rows = int(np.count_nonzero(expected != observed))
@@ -462,7 +480,8 @@ def main() -> None:
                 "device_count": int(frame["DeviceName"].nunique()),
                 "signal_count": int(frame["plot_signal_id"].nunique()),
                 "rows": len(frame),
-                "formal_intervals": "; ".join(f"[{start:g}, {end:g}]" for start, end in intervals) or "[]",
+                "formal_intervals": "; ".join(f"[{start:g}, {end:g}]" for start, end in displayed_intervals) or "[]",
+                "configured_intervals": "; ".join(f"[{start:g}, {end:g}]" for start, end in intervals) or "[]",
                 "formal_status": formal_status,
                 "formal_source": formal_source,
                 "csv_label_statuses": statuses,
