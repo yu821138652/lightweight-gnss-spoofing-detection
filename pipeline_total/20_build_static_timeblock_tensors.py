@@ -389,6 +389,7 @@ def _stats(times_ns: np.ndarray, values: np.ndarray, endpoint: float) -> list[fl
 def _aggregate_source(df: pd.DataFrame) -> pd.DataFrame:
     aggregation: dict[str, str] = {
         "Label": "max",
+        "TOW": "median",
         "FreqBand": "median",
         "utcTimeMillis": "median",
         **{feature: "median" for feature in RAW_FEATURES if feature != "FreqBand"},
@@ -407,10 +408,17 @@ def _make_source_windows(
     epoch_splits: np.ndarray,
     epoch_segments: np.ndarray,
     device_id: int,
+    recording_id: int,
+    source_id: int,
+    signal_to_id: dict[str, int],
 ) -> dict[str, dict[str, list[np.ndarray]]]:
     """Build all eligible raw/stats windows for one source in one pass."""
     def empty_part() -> dict[str, list[np.ndarray]]:
-        return {"raw": [], "stats": [], "mask": [], "y": [], "dynamic": [], "device": []}
+        return {
+            "raw": [], "stats": [], "mask": [], "y": [], "dynamic": [], "device": [],
+            "window_time_nanos": [], "endpoint_utc_millis": [], "endpoint_tow": [],
+            "recording_id": [], "source_id": [], "signal_id": [],
+        }
 
     outputs = {split: empty_part() for split in ("train", "val", "test")}
     times = np.sort(source["TimeNanos"].unique().astype(np.int64))
@@ -419,7 +427,7 @@ def _make_source_windows(
     # source rows are sorted by TimeNanos; map epoch to split.
     split_by_time = {int(t): str(s) for t, s in zip(times, epoch_splits)}
     segment_by_time = {int(t): str(s) for t, s in zip(times, epoch_segments)}
-    observations: dict[str, dict[int, tuple[np.ndarray, float, int, float]]] = {}
+    observations: dict[str, dict[int, tuple[np.ndarray, float, int, float, float]]] = {}
     endpoint_ids: dict[int, list[str]] = {}
     for row in source.itertuples(index=False):
         identity = str(row.signal_id); t = int(row.TimeNanos)
@@ -429,6 +437,7 @@ def _make_source_windows(
             float(getattr(row, "utcTimeMillis", np.nan)),
             int(getattr(row, "Label", 0) > 0),
             float(getattr(row, "FreqBand", np.nan)),
+            float(getattr(row, "TOW", np.nan)),
         )
         endpoint_ids.setdefault(t, []).append(identity)
 
@@ -458,6 +467,9 @@ def _make_source_windows(
         stats_x = np.full((MAX_SIGNALS, 1, len(STAT_NAMES)), np.nan, dtype=np.float32)
         mask = np.zeros(MAX_SIGNALS, dtype=bool)
         y = np.full(MAX_SIGNALS, IGNORE_INDEX, dtype=np.int64)
+        signal_ids = np.full(MAX_SIGNALS, -1, dtype=np.int32)
+        endpoint_utc_values: list[float] = []
+        endpoint_tow_values: list[float] = []
         for slot, identity in enumerate(identities):
             signal = observations[str(identity)]
             observed = [(int(t), signal[int(t)]) for t in window_times if int(t) in signal]
@@ -465,7 +477,7 @@ def _make_source_windows(
                 continue
             hist_t = np.asarray([item[0] for item in observed], dtype=np.int64)
             hist_values = np.stack([item[1][0] for item in observed])
-            endpoint_values, _utc, endpoint_label, endpoint_band = signal[endpoint]
+            endpoint_values, endpoint_utc, endpoint_label, endpoint_band, endpoint_tow = signal[endpoint]
             raw_values = np.asarray([item[1][0] for item in observed], dtype=np.float64)
             for item_i, (t, _record) in enumerate(observed):
                 raw_x[slot, int(np.searchsorted(window_times, t)), :] = raw_values[item_i].astype(np.float32)
@@ -483,11 +495,20 @@ def _make_source_windows(
             stats_x[slot, 0, :] = np.asarray(vector, dtype=np.float32)
             y[slot] = endpoint_label
             mask[slot] = True
+            signal_ids[slot] = signal_to_id[str(identity)]
+            endpoint_utc_values.append(endpoint_utc)
+            endpoint_tow_values.append(endpoint_tow)
         if not mask.any():
             continue
         out = outputs[split_filter]
         out["raw"].append(raw_x); out["stats"].append(stats_x); out["mask"].append(mask)
         out["y"].append(y); out["dynamic"].append(np.asarray(False)); out["device"].append(np.asarray(device_id))
+        out["window_time_nanos"].append(np.asarray(endpoint, dtype=np.int64))
+        out["endpoint_utc_millis"].append(np.asarray(np.nanmedian(endpoint_utc_values), dtype=np.float64))
+        out["endpoint_tow"].append(np.asarray(np.nanmedian(endpoint_tow_values), dtype=np.float64))
+        out["recording_id"].append(np.asarray(recording_id, dtype=np.int32))
+        out["source_id"].append(np.asarray(source_id, dtype=np.int32))
+        out["signal_id"].append(signal_ids)
     return outputs
 
 
@@ -499,6 +520,12 @@ def _empty_arrays() -> dict[str, np.ndarray]:
         "y": np.empty((0, MAX_SIGNALS), np.int64),
         "dynamic": np.empty((0,), bool),
         "device": np.empty((0,), np.int64),
+        "window_time_nanos": np.empty((0,), np.int64),
+        "endpoint_utc_millis": np.empty((0,), np.float64),
+        "endpoint_tow": np.empty((0,), np.float64),
+        "recording_id": np.empty((0,), np.int32),
+        "source_id": np.empty((0,), np.int32),
+        "signal_id": np.empty((0, MAX_SIGNALS), np.int32),
     }
 
 
@@ -506,7 +533,10 @@ def _stack_windows(parts: list[dict[str, list[np.ndarray]]]) -> dict[str, np.nda
     if not parts:
         return _empty_arrays()
     result: dict[str, np.ndarray] = {}
-    for key in ("raw", "stats", "mask", "y", "dynamic", "device"):
+    for key in (
+        "raw", "stats", "mask", "y", "dynamic", "device", "window_time_nanos",
+        "endpoint_utc_millis", "endpoint_tow", "recording_id", "source_id", "signal_id",
+    ):
         values = [value for part in parts for value in part[key]]
         if not values:
             return _empty_arrays()
@@ -595,7 +625,10 @@ def build_fold(
 ) -> dict[str, dict[str, int]]:
     configure(time_steps)
     output_dir.mkdir(parents=True, exist_ok=True)
-    raw_required = [*KEYS, "DeviceName", SOURCE_COL, "TimeNanos", "utcTimeMillis", "signal_id", "Label", "LabelStatus", *RAW_FEATURES]
+    raw_required = [
+        *KEYS, "DeviceName", SOURCE_COL, "TimeNanos", "TOW", "utcTimeMillis", "signal_id",
+        "Label", "LabelStatus", *RAW_FEATURES,
+    ]
     LOG.info("Reading %s", csv)
     df = pd.read_csv(csv, usecols=lambda c: c in set(raw_required))
     missing = set(raw_required).difference(df.columns)
@@ -605,7 +638,7 @@ def build_fold(
     for key in KEYS + ["DeviceName", SOURCE_COL, "signal_id"]:
         df[key] = df[key].astype(str)
     df["Label"] = (pd.to_numeric(df["Label"], errors="coerce").fillna(0) > 0).astype(np.int8)
-    for feature in RAW_FEATURES + ["TimeNanos", "utcTimeMillis"]:
+    for feature in RAW_FEATURES + ["TimeNanos", "TOW", "utcTimeMillis"]:
         df[feature] = pd.to_numeric(df[feature], errors="coerce")
     df = df.dropna(subset=[*KEYS, SOURCE_COL, "DeviceName", "TimeNanos", "utcTimeMillis", "signal_id"])
     outer = _load_outer_manifest(outer_manifest_path)
@@ -625,6 +658,35 @@ def build_fold(
     device_to_id = {name: i for i, name in enumerate(device_names)}
     (output_dir / "device_mapping.json").write_text(json.dumps(device_to_id, indent=2, ensure_ascii=False), encoding="utf-8")
     (output_dir / "outer_recording_manifest.csv").write_text(outer.to_csv(index=False), encoding="utf-8-sig")
+
+    recording_rows = outer[KEYS].sort_values(KEYS, kind="mergesort").reset_index(drop=True)
+    recording_to_id = {
+        tuple(row): index
+        for index, row in enumerate(recording_rows[KEYS].astype(str).itertuples(index=False, name=None))
+    }
+    source_rows = (
+        df[[*KEYS, "DeviceName", SOURCE_COL]]
+        .drop_duplicates()
+        .sort_values([*KEYS, "DeviceName", SOURCE_COL], kind="mergesort")
+        .reset_index(drop=True)
+    )
+    source_to_id = {
+        tuple(row): index
+        for index, row in enumerate(
+            source_rows[[*KEYS, "DeviceName", SOURCE_COL]].astype(str).itertuples(index=False, name=None)
+        )
+    }
+    signal_values = sorted(df["signal_id"].astype(str).unique().tolist())
+    signal_to_id = {signal: index for index, signal in enumerate(signal_values)}
+    trace_index = {
+        "recordings": recording_rows.to_dict(orient="records"),
+        "sources": source_rows.to_dict(orient="records"),
+        "signal_ids": signal_values,
+        "description": "Integer indices stored in raw/*.npz for endpoint-level prediction traceability.",
+    }
+    (output_dir / "window_trace_index.json").write_text(
+        json.dumps(trace_index, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
 
     chunks: dict[str, list[dict[str, list[np.ndarray]]]] = {"train": [], "val": [], "test": []}
     assignment_rows: list[dict[str, object]] = []
@@ -660,7 +722,16 @@ def build_fold(
                 segments = np.where(segments == "unassigned", "0", segments)
             if np.all(splits == "unassigned"):
                 raise ValueError(f"No block interval/epoch assignment matches source {source_key}")
-        source_parts = _make_source_windows(source, splits, segments, device_to_id[device_name])
+        source_identity = (*key_tuple, device_name, str(source_key[4]))
+        source_parts = _make_source_windows(
+            source,
+            splits,
+            segments,
+            device_to_id[device_name],
+            recording_to_id[key_tuple],
+            source_to_id[source_identity],
+            signal_to_id,
+        )
         for split, part in source_parts.items():
             chunks[split].append(part)
         # Audit epoch assignment counts.
@@ -680,7 +751,15 @@ def build_fold(
     raw_dir.mkdir(exist_ok=True); stats_dir.mkdir(exist_ok=True)
     for split, data in datasets.items():
         common = {"mask": data["mask"], "y": data["y"], "is_dynamic": data["dynamic"], "device_id": data["device"]}
-        np.savez_compressed(raw_dir / f"{split}.npz", x=data["raw"], **common)
+        trace = {
+            "window_time_nanos": data["window_time_nanos"],
+            "endpoint_utc_millis": data["endpoint_utc_millis"],
+            "endpoint_tow": data["endpoint_tow"],
+            "recording_id": data["recording_id"],
+            "source_id": data["source_id"],
+            "signal_id": data["signal_id"],
+        }
+        np.savez_compressed(raw_dir / f"{split}.npz", x=data["raw"], **common, **trace)
         np.savez_compressed(stats_dir / f"{split}.npz", x=data["stats"], **common)
     pd.DataFrame(assignment_rows).to_csv(output_dir / "source_epoch_assignment_summary.csv", index=False, encoding="utf-8-sig")
     (output_dir / "raw" / "feature_names.json").write_text(json.dumps(RAW_NAMES, indent=2), encoding="utf-8")
@@ -690,6 +769,7 @@ def build_fold(
         "raw_feature_count": len(RAW_FEATURES), "stats_feature_count": len(STAT_NAMES),
         "raw_features": RAW_NAMES, "stats_features": STAT_NAMES,
         "canonical_clock": "utcTimeMillis", "window_clock": "TimeNanos",
+        "trace_index": "window_trace_index.json",
         "block_size_canonical_epochs": block_size, "guard_epochs": GUARD_EPOCHS,
         "windows_cross_split_boundary": False, "stats_history_crosses_boundary": False,
     }

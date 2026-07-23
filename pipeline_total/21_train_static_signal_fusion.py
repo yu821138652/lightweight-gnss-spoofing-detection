@@ -14,6 +14,7 @@ five features by name, deliberately excluding the precomputed
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import logging
 import random
@@ -246,6 +247,97 @@ def evaluate(
     }
 
 
+@torch.no_grad()
+def export_test_misclassifications(
+    model: nn.Module,
+    test: FusionDataset,
+    raw_test_path: Path,
+    trace_index_path: Path,
+    output_path: Path,
+    batch_size: int,
+    device: torch.device,
+) -> int:
+    """Write endpoint-level false positives and false negatives for a locked test run."""
+    trace_arrays = {
+        "window_time_nanos", "endpoint_utc_millis", "endpoint_tow", "recording_id", "source_id", "signal_id",
+    }
+    if not trace_index_path.is_file():
+        raise FileNotFoundError(
+            f"Missing tensor trace index: {trace_index_path}. Rebuild tensors with the current builder."
+        )
+    with np.load(raw_test_path, allow_pickle=False) as raw:
+        missing = trace_arrays.difference(raw.files)
+        if missing:
+            raise ValueError(
+                f"{raw_test_path} has no endpoint trace metadata: {sorted(missing)}. "
+                "Rebuild tensors with the current builder."
+            )
+        trace = {name: np.asarray(raw[name]).copy() for name in trace_arrays}
+    if trace["signal_id"].shape != tuple(test.y.shape):
+        raise ValueError("Tensor trace signal_id shape does not match test labels")
+    if len(trace["window_time_nanos"]) != len(test):
+        raise ValueError("Tensor trace window count does not match test tensors")
+    index = json.loads(trace_index_path.read_text(encoding="utf-8"))
+    recordings = index.get("recordings", [])
+    sources = index.get("sources", [])
+    signal_ids = index.get("signal_ids", [])
+    if not isinstance(recordings, list) or not isinstance(sources, list) or not isinstance(signal_ids, list):
+        raise ValueError(f"Invalid trace index: {trace_index_path}")
+
+    fields = [
+        "ErrorType", "Environment", "Scenario", "Session", "DeviceName", "SourceRelativePath",
+        "signal_id", "WindowEndpointTimeNanos", "EndpointUtcTimeMillis", "EndpointTOW",
+        "Label", "Prediction", "PositiveProbability",
+    ]
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    predictions_path = output_path.with_name(output_path.name.replace("misclassifications", "predictions"))
+    count = 0
+    model.eval()
+    with (
+        output_path.open("w", newline="", encoding="utf-8-sig") as error_handle,
+        predictions_path.open("w", newline="", encoding="utf-8-sig") as prediction_handle,
+    ):
+        error_writer = csv.DictWriter(error_handle, fieldnames=fields)
+        prediction_writer = csv.DictWriter(prediction_handle, fieldnames=fields)
+        error_writer.writeheader()
+        prediction_writer.writeheader()
+        for start in range(0, len(test), batch_size):
+            end = min(start + batch_size, len(test))
+            logits = model(test.raw[start:end].to(device), test.stats[start:end].to(device))
+            probabilities = torch.softmax(logits, dim=-1)[..., 1].cpu().numpy()
+            labels = test.y[start:end].cpu().numpy()
+            masks = test.mask[start:end].cpu().numpy()
+            predictions = logits.argmax(-1).cpu().numpy()
+            for window_i, slot_i in np.argwhere(masks):
+                absolute_i = start + int(window_i)
+                recording = recordings[int(trace["recording_id"][absolute_i])]
+                source = sources[int(trace["source_id"][absolute_i])]
+                signal = signal_ids[int(trace["signal_id"][absolute_i, int(slot_i)])]
+                label = int(labels[window_i, slot_i])
+                prediction = int(predictions[window_i, slot_i])
+                outcome = "TP" if label and prediction else "TN" if not label and not prediction else "FP" if prediction else "FN"
+                row = {
+                    "ErrorType": outcome,
+                    "Environment": recording["Environment"],
+                    "Scenario": recording["Scenario"],
+                    "Session": recording["Session"],
+                    "DeviceName": source["DeviceName"],
+                    "SourceRelativePath": source["SourceRelativePath"],
+                    "signal_id": signal,
+                    "WindowEndpointTimeNanos": int(trace["window_time_nanos"][absolute_i]),
+                    "EndpointUtcTimeMillis": float(trace["endpoint_utc_millis"][absolute_i]),
+                    "EndpointTOW": float(trace["endpoint_tow"][absolute_i]),
+                    "Label": label,
+                    "Prediction": prediction,
+                    "PositiveProbability": float(probabilities[window_i, slot_i]),
+                }
+                prediction_writer.writerow(row)
+                if label != prediction:
+                    error_writer.writerow(row)
+                    count += 1
+    return count
+
+
 def make_model(
     raw_input_dim: int,
     stats_input_dim: int,
@@ -371,11 +463,18 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Evaluate a validation-selected checkpoint on test without training.",
     )
+    parser.add_argument(
+        "--export-test-misclassifications",
+        action="store_true",
+        help="With --test-only, export endpoint-level false positives and false negatives as CSV.",
+    )
     args = parser.parse_args()
     if not args.test_only and args.encoder is None:
         parser.error("--encoder is required for training and --dry-run")
     if args.checkpoint is not None and not args.test_only:
         parser.error("--checkpoint is only valid with --test-only")
+    if args.export_test_misclassifications and not args.test_only:
+        parser.error("--export-test-misclassifications requires --test-only")
     if args.epochs < 1:
         parser.error("--epochs must be positive")
     if args.batch_size < 1:
@@ -451,6 +550,18 @@ def main() -> None:
         args.output_dir.mkdir(parents=True, exist_ok=True)
         metrics_path = args.output_dir / f"test_metrics_{model_name}.json"
         metrics_path.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
+        if args.export_test_misclassifications:
+            errors_path = args.output_dir / f"test_misclassifications_detailed_{model_name}.csv"
+            error_count = export_test_misclassifications(
+                model,
+                test,
+                raw_dir / "test.npz",
+                args.data_dir / "window_trace_index.json",
+                errors_path,
+                args.batch_size,
+                device,
+            )
+            LOG.info("exported %d test misclassifications to %s", error_count, errors_path)
         LOG.info("locked checkpoint test=%s", json.dumps(metrics))
         return
 

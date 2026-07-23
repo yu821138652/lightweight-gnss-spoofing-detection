@@ -508,7 +508,7 @@ def write_missing_report(final_df, output_path):
     logging.info(f"Missing-rate report saved to: {missing_path}")
 
 
-def run_full_pipeline(config):
+def run_full_pipeline(config, include_unreviewed=False):
     """Run the complete preprocessing pipeline."""
     logging.info("=" * 60)
     logging.info("GNSS Preprocessing Pipeline - Full Mode")
@@ -532,8 +532,18 @@ def run_full_pipeline(config):
     known_types = list(config.get('labeling', {}).get('spoofing_type_to_label', {}).keys())
     
     all_dfs = []
+    skipped_unreviewed = 0
     for file_path in tqdm(all_files, desc="Processing files"):
         spoofing_type = get_spoofing_type_from_path(file_path, known_types)
+        metadata = infer_path_metadata(file_path, data_root=input_dir, config=config)
+        _, label_status, _ = get_label_intervals(metadata, spoofing_type, config)
+        if not include_unreviewed and label_status != 'reviewed':
+            skipped_unreviewed += 1
+            logging.info(
+                "Skipping unreviewed Session: %s/%s/%s (%s)",
+                metadata['Environment'], metadata['Scenario'], metadata['Session'], label_status,
+            )
+            continue
         df, device_name = process_single_file(file_path, spoofing_type, config, data_root=input_dir)
         
         if not df.empty:
@@ -546,6 +556,8 @@ def run_full_pipeline(config):
         logging.error("No data processed!")
         return
     
+    if skipped_unreviewed:
+        logging.info("Skipped %d unreviewed raw logs", skipped_unreviewed)
     logging.info("Combining all files...")
     final_df = pd.concat(all_dfs, ignore_index=True)
     
@@ -641,6 +653,10 @@ def main():
                         help='Path to configuration YAML')
     parser.add_argument('--input', type=str, help='Input directory (for parse/plot modes)')
     parser.add_argument('--output', type=str, help='Output path (overrides config)')
+    parser.add_argument(
+        '--include-unreviewed', action='store_true',
+        help='Include sessions without reviewed labels. Intended only for diagnostics.',
+    )
     args = parser.parse_args()
     
     # Load config
@@ -662,7 +678,7 @@ def main():
     
     # Execute mode
     if args.mode == 'full' or args.mode == 'csv':
-        run_full_pipeline(config)
+        run_full_pipeline(config, include_unreviewed=args.include_unreviewed)
     elif args.mode == 'plot':
         if not args.input:
             logging.error("--input required for plot mode")
