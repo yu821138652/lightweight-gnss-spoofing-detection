@@ -20,11 +20,17 @@ DEVICE_ORDER = [
     "RedMi_K60",
     "XiaoMi_MI8",
 ]
-TARGET_BAND_TOKENS = ("_L5", "_E5", "_B2")
+TARGET_BAND_TOKENS = {
+    "L1": ("_L1", "_E1", "_B1"),
+    "L5": ("_L5", "_E5", "_B2"),
+}
 
 
-def is_target_band(signal_id: pd.Series) -> pd.Series:
-    return signal_id.astype(str).map(lambda value: any(token in value for token in TARGET_BAND_TOKENS))
+def is_target_band(signal_id: pd.Series, scenario: str) -> pd.Series:
+    if "L_15" in scenario:
+        return pd.Series(True, index=signal_id.index)
+    tokens = TARGET_BAND_TOKENS["L5"] if "L5" in scenario else TARGET_BAND_TOKENS["L1"]
+    return signal_id.astype(str).map(lambda value: any(token in value for token in tokens))
 
 
 def label_intervals(frame: pd.DataFrame, config: dict) -> list[tuple[float, float]]:
@@ -73,7 +79,7 @@ def main() -> None:
     frame["PositiveProbability"] = pd.to_numeric(frame["PositiveProbability"], errors="raise")
     frame["Label"] = pd.to_numeric(frame["Label"], errors="raise").astype(int)
     frame["Prediction"] = pd.to_numeric(frame["Prediction"], errors="raise").astype(int)
-    frame["TargetBand"] = is_target_band(frame["signal_id"])
+    frame["TargetBand"] = is_target_band(frame["signal_id"], str(frame.iloc[0]["Scenario"]))
     devices = [device for device in DEVICE_ORDER if device in set(frame["DeviceName"])]
     devices.extend(sorted(set(frame["DeviceName"]).difference(devices)))
     intervals = label_intervals(frame, config)
