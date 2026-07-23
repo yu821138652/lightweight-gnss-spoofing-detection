@@ -333,7 +333,7 @@ def calculate_advanced_features(df):
 # LABELING MODULE
 # =============================================================================
 def get_label_intervals(metadata, spoofing_type, config):
-    """Resolve session labels first and use legacy scenario labels only when allowed."""
+    """Resolve the one formal Environment/Scenario/Session label entry."""
     labeling_config = config.get('labeling', {})
     environment = metadata['Environment']
     scenario = metadata['Scenario']
@@ -346,19 +346,18 @@ def get_label_intervals(metadata, spoofing_type, config):
         .get(scenario, {})
         .get(session)
     )
-    if session_entry is not None:
-        if isinstance(session_entry, dict):
-            return session_entry.get('intervals', []), session_entry.get('status', 'reviewed'), 'session_config'
-        return session_entry, 'reviewed', 'session_config'
-
-    fallback_environments = set(
-        labeling_config.get('scenario_fallback_environments', ['playground'])
+    if session_entry is None:
+        return [], 'needs_review', 'missing_session_config'
+    if not isinstance(session_entry, dict):
+        raise ValueError(
+            'Session label entries must be mappings with status and intervals: '
+            f'{environment}/{scenario}/{session}'
+        )
+    return (
+        session_entry.get('intervals', []) or [],
+        str(session_entry.get('status', 'needs_review')),
+        'session_config',
     )
-    if environment in fallback_environments:
-        intervals = labeling_config.get('spoofing_tow_intervals', {}).get(spoofing_type, [])
-        return intervals, 'reviewed', 'scenario_fallback'
-
-    return [], 'needs_review', 'missing_session_config'
 
 
 def add_spoofing_labels(df, spoofing_type, metadata, config):

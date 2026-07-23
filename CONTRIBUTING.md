@@ -73,13 +73,13 @@ lightweight_gnss_spoofing_detection
 docs/data_inventory.md
 ```
 
-后续建议新增：
+如需查看逐日志状态，可按需生成本地清单（不提交到仓库）：
 
 ```text
-docs/data_manifest.csv
+output/data_manifest.csv
 ```
 
-用于记录每个日志文件的环境、场景、设备、是否已生成特征、是否已标注等状态。
+用于记录每个日志文件的环境、场景、设备、是否已生成特征、是否已标注等状态。生成命令见 `README.md`。
 
 ## 4. 推荐协作流程
 
@@ -214,14 +214,12 @@ docs/experiment_records/2026-07-xx_cross_environment.md
 
 近期建议优先完成：
 
-1. 统一 `playground` 和 `new_building` 数据目录结构。
-2. 生成或整理 `data_manifest.csv`。
-3. 生成两套数据的 `*-plot_features.csv`。
-4. 可视化 C/N0、AGC、uncertainty 特征。
-5. 人工复核 TOW 标签。
-6. 生成统一 `processed_gnss_data.csv`。
-7. 跑轻量 baseline。
-8. 做跨环境与跨设备实验。
+1. 先阅读 `docs/handoff_status.md`，确认当前标签和数据风险。
+2. 按需在 `output/` 生成本地 data manifest 和 CSV session manifest。
+3. 生成两套数据的 `*-plot_features.csv` 和 label plots。
+4. 人工复核 TOW 标签，并更新 `configs/preprocessing.yml`。
+5. 重建统一 `processed_gnss_data.csv` 和审计结果。
+6. 在可信 Session 清单固定后，再跑轻量 baseline 和跨环境实验。
 
 ## 9. 沟通建议
 

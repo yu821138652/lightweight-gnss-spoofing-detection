@@ -41,16 +41,49 @@ FEATURES = [
 # 全局参数
 MAX_GAP_SECONDS = 10
 
-# 欺骗区间
-SPOOFING_INTERVALS = {
-    'st_L1': [[262228, 262860]],
-    'st_L5': [[266310, 267054]],
-    'st_L_15': [[258028, 258653]],
-    'dy_L1': [[263995, 264050], [264690, 264740], [265015, 265065], 
-              [481730, 481940], [482350, 482420], [482650, 482750]],
-    'dy_L5': [[269190, 269220], [268960, 268990], [269434, 269470], [483200, 483320]],
-    'dy_L_15': [[261285, 261310], [260025, 260050], [260970, 261040]],
-}
+def load_labeling_config(config_path):
+    """Load the current label policy used by the preprocessing pipeline."""
+    config_path = Path(config_path)
+    if not config_path.is_file():
+        raise FileNotFoundError(f"Label config not found: {config_path}")
+    with config_path.open('r', encoding='utf-8') as handle:
+        config = yaml.safe_load(handle) or {}
+    labeling = config.get('labeling', {})
+    if not isinstance(labeling, dict):
+        raise ValueError(f"Invalid labeling section in {config_path}")
+    return labeling
+
+
+def _first_value(df, column):
+    """Return the first non-empty value in a metadata column, if present."""
+    if column not in df.columns:
+        return None
+    values = df[column].dropna().astype(str)
+    values = values[values.str.strip() != '']
+    return values.iloc[0] if len(values) else None
+
+
+def resolve_spoofing_intervals(df, scenario, labeling, environment=None, session=None):
+    """Resolve reviewed intervals from the formal Session-level label entry."""
+    environment = environment or _first_value(df, 'Environment') or ''
+    session = session or _first_value(df, 'Session')
+    session_table = (
+        labeling.get('session_spoofing_tow_intervals', {})
+        .get(environment, {})
+        .get(scenario, {})
+    )
+    if not session or not isinstance(session_table, dict) or session not in session_table:
+        return []
+    entry = session_table[session]
+    if not isinstance(entry, dict):
+        raise ValueError(
+            'Session label entries must be mappings with status and intervals: '
+            f'{environment}/{scenario}/{session}'
+        )
+    if str(entry.get('status', '')).lower() == 'reviewed':
+        # An explicitly reviewed empty interval list means reviewed normal.
+        return entry.get('intervals', []) or []
+    return []
 
 
 def plot_with_gap_handling(ax, x, y, color, alpha=0.6, linewidth=0.5, label=None):
@@ -119,8 +152,8 @@ def create_feature_plot(df, feature_col, feature_label, device_name,
     plt.close()
 
 
-def process_scenario(scenario: str, input_base: str = 'data_raw', 
-                     output_base: str = 'output_plots'):
+def process_scenario(scenario: str, input_base: str = 'data_raw',
+                     output_base: str = 'output_plots', labeling=None):
     """处理一个场景下的所有 CSV 文件"""
     input_path = Path(input_base) / scenario
     output_path = Path(output_base) / scenario
@@ -128,9 +161,6 @@ def process_scenario(scenario: str, input_base: str = 'data_raw',
     if not input_path.exists():
         print(f"Scenario not found: {input_path}")
         return
-    
-    # 获取欺骗区间
-    spoof_intervals = SPOOFING_INTERVALS.get(scenario, [])
     
     # 找到所有 CSV 文件
     csv_files = sorted(input_path.rglob("*-plot_features.csv"))
@@ -155,12 +185,33 @@ def process_scenario(scenario: str, input_base: str = 'data_raw',
             # 计算相对路径
             rel_path = csv_file.relative_to(input_path)
             out_dir = output_path / rel_path.parent
+            environment = _first_value(df, 'Environment')
+            if not environment:
+                input_parts = {part.lower() for part in Path(input_base).parts}
+                environment = (
+                    'new_building' if 'new_building' in input_parts
+                    else 'playground' if 'playground' in input_parts
+                    else ''
+                )
+            session = _first_value(df, 'Session')
+            if not session and rel_path.parts:
+                # input_path already includes the scenario, so the first
+                # relative component is the recording/session directory.
+                session = rel_path.parts[0]
             # Some playground device folders contain multiple source logs.
             # Keep their plots separate instead of overwriting the same seven
             # feature filenames in the shared device directory.
             if csv_count_by_parent[csv_file.parent] > 1:
                 out_dir = out_dir / csv_file.stem
-            
+
+            spoof_intervals = resolve_spoofing_intervals(
+                df,
+                scenario,
+                labeling or {},
+                environment=environment,
+                session=session,
+            )
+
             # 为每个特征生成图
             for feat_col, feat_label in FEATURES:
                 if feat_col not in df.columns:
@@ -185,7 +236,13 @@ def main():
     parser.add_argument('--input-base', default='data_raw', help='Directory containing scenario folders.')
     parser.add_argument('--output-base', default='output_plots', help='Directory for generated PNG files.')
     parser.add_argument('--scenario', default=None, help='Only plot one scenario, e.g. st_L1.')
+    parser.add_argument(
+        '--config',
+        default=str(Path(__file__).resolve().parents[1] / 'configs' / 'preprocessing.yml'),
+        help='Current preprocessing/label configuration YAML.',
+    )
     args = parser.parse_args()
+    labeling = load_labeling_config(args.config)
 
     print("=" * 60)
     print("Batch Feature Time-Series Plotting")
@@ -199,7 +256,12 @@ def main():
         scenarios = [args.scenario]
 
     for scenario in scenarios:
-        process_scenario(scenario, input_base=args.input_base, output_base=args.output_base)
+        process_scenario(
+            scenario,
+            input_base=args.input_base,
+            output_base=args.output_base,
+            labeling=labeling,
+        )
     
     print("\n" + "=" * 60)
     print("All plots generated.")

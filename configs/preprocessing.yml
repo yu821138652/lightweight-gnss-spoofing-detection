@@ -32,23 +32,66 @@ device_folder_map:
   "Google_Pixel6": "Google_Pixel6"
 
 labeling:
-  # Legacy scenario intervals are only valid for playground recordings.
-  scenario_fallback_environments:
-    - playground
-
-  # Session-specific labels take precedence over legacy scenario intervals.
-  # An empty interval list means the session was reviewed as normal. Unlisted
-  # new_building sessions are emitted with LabelStatus=needs_review and must
-  # not enter formal training.
+  # Formal labels use one schema for both environments:
+  # environment -> scenario -> session -> {status, intervals}.
+  # An empty interval list means the Session was reviewed as normal. Any
+  # unlisted Session is emitted with LabelStatus=needs_review and must not
+  # enter formal training.
   session_spoofing_tow_intervals:
     playground:
+      st_L1:
+        "2025.07.30.08.40_2025.07.30.09.12":
+          status: reviewed
+          intervals: [[262228, 262860]]
+      st_L5:
+        "2025.07.30.09.48_2025.07.30.10.14":
+          status: reviewed
+          intervals: [[266310, 267054]]
+      st_L_15:
+        "2025.07.30.07.30_2025.07.30.08.01":
+          status: reviewed
+          intervals: [[258028, 258653]]
+      dy_L1:
+        "2022.07.08semicircle":
+          status: reviewed
+          intervals: [[481730, 481940], [482360, 482400]]
+        "2022.07.08square":
+          status: reviewed
+          intervals: [[482660, 482725]]
+        "2025.07.30.09.13_2025.07.30.09.18（动态L1）":
+          status: reviewed
+          intervals: []
+        "2025.07.30.09.18_2025.07.30.09.22（动态L1）":
+          status: reviewed
+          intervals: [[263997, 264047]]
+        "2025.07.30.09.29_2025.07.30.09.34（动态L1）":
+          status: reviewed
+          intervals: [[264689, 264747]]
+        "2025.07.30.09.35_2025.07.30.09.39（动态L1）":
+          status: reviewed
+          intervals: [[265015, 265065]]
+      dy_L5:
+        "2025.07.30.10.40_2025.07.30.10.44（动态L5）":
+          status: reviewed
+          intervals: [[268960, 268983]]
+        "2025.07.30.10.44_2025.07.30.10.49（动态L5）":
+          status: reviewed
+          intervals: [[269190, 269215]]
+        "2025.07.30.10.49_2025.07.30.10.52（动态L5）":
+          status: reviewed
+          intervals: [[269434, 269455]]
       dy_L_15:
-        # Multi-reviewer correction: the original scenario fallback
-        # [260970, 261040] was judged substantially wider than the observable
-        # dual-band spoofing response in this recording.
+        "2025.07.30.08.12_2025.07.30.08.16（动态L1+L5）":
+          status: reviewed
+          intervals: [[260027, 260047]]
+        # Multi-reviewer correction: the wider candidate [260970, 261040]
+        # included long edge regions without an observable spoofing response.
         "2025.07.30.08.26_2025.07.30.08.32（动态L1+L5）":
           status: reviewed
           intervals: [[260990, 261020]]
+        "2025.07.30.08.33_2025.07.30.08.36（动态L1+L5）":
+          status: reviewed
+          intervals: [[261288, 261306]]
     new_building:
       st_L1:
         "2025.07.29.19.22_新主楼":
@@ -85,15 +128,6 @@ labeling:
         "2025.07.29.18.33_新主楼":
           status: reviewed
           intervals: [[211060, 211083]]
-
-  spoofing_tow_intervals:
-    st_L1: [[262228, 262860]]
-    st_L5: [[266310, 267054]]
-    st_L_15: [[258028, 258653]]
-    normal: []
-    dy_L1: [[263995, 264050], [264690, 264740], [265015, 265065], [481730, 481940], [482350, 482420], [482650, 482750]]
-    dy_L5: [[269190, 269220], [268960, 268990], [269434, 269470], [483200, 483320]]
-    dy_L_15: [[261285, 261310], [260025, 260050], [260970, 261040]]
 
   spoofing_type_to_label:
     normal: 0

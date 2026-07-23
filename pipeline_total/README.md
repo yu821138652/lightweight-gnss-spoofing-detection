@@ -1,10 +1,10 @@
 # pipeline_total 脚本索引
 
-当前状态以 `docs/handoff_status.md` 为准。本目录分为三段：01–10 是既有数据与基础实验链；11–18 是 P0–P5 历史设备级探索；19–21 是最近的静态逐 signal 实验入口。
+当前状态以 `docs/handoff_status.md` 为准。本目录分为三段：01–10 是既有数据与基础实验链；11–18 是 P0–P5 历史设备级探索；19–21 是最近的静态逐 signal 实验入口。22 是当前推荐的 Session 级标签审查工具。
 
 ## 01–10：既有数据与诊断链
 
-本次整理不改动这些脚本的结构。
+这些脚本保留既有结构；02 已补充按当前 YAML 配置解析 Session 级标签阴影。
 
 | 编号 | 脚本 | 作用 |
 |---:|---|---|
@@ -22,15 +22,31 @@
 
 注意：
 
-- 02 的标签阴影仍来自脚本内场景级固定区间。操场动态 L15 当前权威区间是 `configs/preprocessing.yml` 中的 Session 级 `[260990, 261020]`，不能用历史 PNG 反推标签。
+- 02 只按 `Environment + Scenario + Session` 读取 `configs/preprocessing.yml` 中的 reviewed 区间；缺少显式 Session 配置时不画阴影，也不会再回退到脚本内或场景级常量。操场动态 L15 当前权威区间是 `[260990, 261020]`；PNG 仍是复核辅助证据，不替代配置和 CSV 标签。
 - 22 读取 `data_csv/` 的每日志镜像 CSV，并以 `configs/preprocessing.yml` 的当前 Session 级配置为阴影来源；同时检查镜像 CSV 的 `Label` 是否已随配置重建。人工全量审查优先使用 22 的面板，而非 02 的历史单图。
 - 04 和配置文件是标签变化后的正式重建入口。
 - 05 的基础接口保留给旧路线；最近的 time-block 实验使用 20。
 
-中央 CSV 重建：
+标签相关数据重建：
 
 ```powershell
+python scripts/build_mirrored_data_csv.py --config configs/preprocessing.yml --overwrite
 python pipeline_total/04_build_labeled_processed_csv.py --mode full --config configs/preprocessing.yml
+python pipeline_total/01_generate_plot_feature_csv.py --data-root data_raw --config configs/preprocessing.yml --overwrite
+```
+
+重建两套逐设备、逐特征 label plots：
+
+```powershell
+python pipeline_total/02_batch_plot_feature_images.py `
+  --input-base data_raw/new_building `
+  --output-base output/label_plots_20260723/new_building `
+  --config configs/preprocessing.yml
+
+python pipeline_total/02_batch_plot_feature_images.py `
+  --input-base data_raw/playground `
+  --output-base output/label_plots_20260723/playground `
+  --config configs/preprocessing.yml
 ```
 
 生成所有 Session 的标签审查包：
@@ -62,20 +78,29 @@ python pipeline_total/22_generate_label_review_dashboards.py `
 
 ## 19–21：当前静态逐 signal 探索
 
-这条链复现最近的 outer-session / inner-time-block W5 实验。它仍是探索协议，不是最终模型。
+这条链复现 2026-07-23 的 7-Session outer-session / inner-time-block W5 实验。它仍是探索协议，不是最终模型。
 
 ### 19_generate_static_timeblock_protocol.py
 
 输入当前中央 CSV 和静态 recording 清单。对每个静态 recording 生成一个 outer fold：完整 recording 作为 test，其余 recording 在连续 canonical UTC 时间块内划分 train/validation，并在边界加入 W-1 guard。
 
+当前重训使用的 7-Session 清单位于 `output/protocols/static_time_block_outer_v2/source_recording_manifest.csv`。它只包含当前中央 CSV 中仍存在的 reviewed 静态 Session；不要继续使用包含已剔除短时操场 L5 的历史 4-fold 清单。
+
 ```powershell
-python pipeline_total/19_generate_static_timeblock_protocol.py
+python pipeline_total/19_generate_static_timeblock_protocol.py `
+  --csv output/processed_gnss_data.csv `
+  --source-recording-manifest output/protocols/static_time_block_outer_v2/source_recording_manifest.csv `
+  --output-dir output/protocols/static_time_block_outer_v2 `
+  --time-steps 5 `
+  --block-epochs 256 `
+  --val-fraction 0.20 `
+  --segment-gap-seconds 2
 ```
 
-默认输出：
+本轮实际输出：
 
 ```text
-output/protocols/static_time_block_outer_v1/
+output/protocols/static_time_block_outer_v2/
   fold_assignment.csv
   fold_summary.csv
   protocol_metadata.json
@@ -86,7 +111,7 @@ output/protocols/static_time_block_outer_v1/
     recording_summary.csv
 ```
 
-`epoch_split_manifest.csv` 是权威逐历元划分。生成器允许任意不少于 2 个 reviewed 静态 recording，不再把当前 8 个 Session 写死。
+`epoch_split_manifest.csv` 是权威逐历元划分。生成器允许任意不少于 2 个 reviewed 静态 recording，不把 Session 数写死；本轮输入清单为 7 个 Session。
 
 ### 20_build_static_timeblock_tensors.py
 
@@ -94,10 +119,11 @@ output/protocols/static_time_block_outer_v1/
 
 ```powershell
 python pipeline_total/20_build_static_timeblock_tensors.py `
-  --outer-manifest output/protocols/static_time_block_outer_v1/fold_1/recording_split_manifest.csv `
-  --block-manifest output/protocols/static_time_block_outer_v1/fold_1/epoch_split_manifest.csv `
-  --output-dir output/tensors/static_timeblock_outer_v1/fold_1 `
-  --time-steps 5
+  --outer-manifest output/protocols/static_time_block_outer_v2/fold_1/recording_split_manifest.csv `
+  --block-manifest output/protocols/static_time_block_outer_v2/fold_1/epoch_split_manifest.csv `
+  --output-dir output/tensors/static_timeblock_outer_v2/fold_1 `
+  --time-steps 5 `
+  --block-size 256
 ```
 
 输出结构：
@@ -120,12 +146,15 @@ raw 张量为兼容 builder 仍保存 7 列；训练器按 `feature_names.json` 
 
 ```powershell
 python pipeline_total/21_train_static_signal_fusion.py `
-  --data-dir output/tensors/static_timeblock_outer_v1/fold_1 `
-  --output-dir output/training/static_timeblock_outer_v1/fold_1/tcn `
+  --data-dir output/tensors/static_timeblock_outer_v2/fold_1 `
+  --output-dir output/training/static_timeblock_outer_v2/fold_1/tcn `
   --encoder tcn `
   --hidden-dim 16 `
   --dropout 0.3 `
+  --lr 0.001 `
   --weight-decay 0.001 `
+  --batch-size 256 `
+  --num-workers 0 `
   --dry-run
 ```
 
@@ -133,25 +162,29 @@ python pipeline_total/21_train_static_signal_fusion.py `
 
 ```powershell
 python pipeline_total/21_train_static_signal_fusion.py `
-  --data-dir output/tensors/static_timeblock_outer_v1/fold_1 `
-  --output-dir output/training/static_timeblock_outer_v1/fold_1/tcn `
+  --data-dir output/tensors/static_timeblock_outer_v2/fold_1 `
+  --output-dir output/training/static_timeblock_outer_v2/fold_1/tcn `
   --encoder tcn `
   --hidden-dim 16 `
   --dropout 0.3 `
+  --lr 0.001 `
   --weight-decay 0.001 `
   --epochs 30 `
   --batch-size 256 `
   --patience 6 `
-  --seed 2026
+  --seed 2026 `
+  --num-workers 0
 ```
 
 checkpoint 锁定后再读取 test：
 
 ```powershell
 python pipeline_total/21_train_static_signal_fusion.py `
-  --data-dir output/tensors/static_timeblock_outer_v1/fold_1 `
-  --output-dir output/training/static_timeblock_outer_v1/fold_1/tcn `
+  --data-dir output/tensors/static_timeblock_outer_v2/fold_1 `
+  --output-dir output/training/static_timeblock_outer_v2/fold_1/tcn `
   --encoder tcn `
+  --batch-size 256 `
+  --num-workers 0 `
   --test-only
 ```
 

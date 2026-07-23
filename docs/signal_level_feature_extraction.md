@@ -73,11 +73,10 @@ python pipeline_total/05_build_train_val_test_tensors.py --csv output/processed_
 本次全量重建得到：
 
 ```text
-源镜像 CSV：132 个
-源镜像数据行：3,175,866 行（逐日志派生 CSV 的历史快照）
-当前统一 processed CSV：约 2,139,284 条 reviewed 信号级记录
-信号级拆分文件：7,044 个
-拆分后总行数：3,175,866 行（镜像 CSV 口径）
+正式源日志 / 镜像 CSV / plot-feature CSV：均为 123 个（操场 89、新主楼 34）
+镜像与中央 CSV：均为 2,998,458 行
+标签分布：正类 631,003、负类 2,367,455
+标签状态与来源：2,998,458 行全部为 `reviewed/session_config`
 ```
 
 审计结果：
@@ -89,9 +88,9 @@ python pipeline_total/05_build_train_val_test_tensors.py --csv output/processed_
 包含多个 signal_id 的拆分文件：0
 ```
 
-新主楼的欺骗 TOW 区间仍需按 `Environment + Scenario + Session` 人工复核后写入
-`configs/preprocessing.yml` 的 `session_spoofing_tow_intervals.new_building`。在此之前，
-这些数据保持 `needs_review`，不进入正式训练。
+两套环境均按 `Environment + Scenario + Session` 人工复核后写入
+`configs/preprocessing.yml` 的 `session_spoofing_tow_intervals`。未显式配置的 Session
+保持 `needs_review`，不进入正式训练。
 
 ## 新主楼协作标注流程
 
@@ -129,7 +128,7 @@ python pipeline_total/05_build_train_val_test_tensors.py --csv output/processed_
    绘制该场景的信号时序图：
 
    ```powershell
-   python pipeline_total/02_batch_plot_feature_images.py --input-base data_raw/new_building --output-base output/new_building_label_plots --scenario st_L1
+   python pipeline_total/02_batch_plot_feature_images.py --input-base data_raw/new_building --output-base output/label_plots_20260723/new_building --scenario st_L1 --config configs/preprocessing.yml
    ```
 
 4. 优先查看至少两台设备的 `Cn0DbHz`，并使用可用设备的 `AgcDb`、时间不确定度和
@@ -160,7 +159,7 @@ python pipeline_total/05_build_train_val_test_tensors.py --csv output/processed_
 
 7. **何时运行：** 第 6 步写入或修改该 Session 的正式区间后。
 
-   **为什么运行：** 将新标签真正写入该 Session 全部设备的派生 CSV，并通过审计确认字段和标签状态正确；不必每次重跑全部 132 个日志。
+   **为什么运行：** 将新标签真正写入该 Session 全部设备的派生 CSV，并通过审计确认字段和标签状态正确；不必每次重跑全部 123 个日志。
 
    仅重建本人负责的 Session，并重新运行 CSV 审计和该 Session 面板：
 

@@ -14,7 +14,7 @@ H:\GNSS\lightweight_gnss_spoofing_detection\data_raw\playground
 Summary:
 
 - scenarios: `st_L1`, `st_L5`, `st_L_15`, `dy_L1`, `dy_L5`, `dy_L_15`
-- raw TXT files: 98
+- active raw TXT files: 89
 - extracted per-log CSV files are stored under `data_csv/playground`
 - devices include HUAWEI, Xiaomi MI8, Redmi/K60-class Xiaomi, Pixel/Google, watch1, watch2, and u-blox-related files
 
@@ -34,7 +34,7 @@ H:\GNSS\lightweight_gnss_spoofing_detection\data_raw\new_building
 Summary:
 
 - scenarios: `st_L1`, `st_L5`, `st_L_15`, `dy_L1`, `dy_L5`, `dy_L_15`
-- raw TXT files: 35
+- active raw TXT files: 34
 - extracted per-log CSV files are stored under `data_csv/new_building`
 - devices include HUAWEI Mate40, XiaoMi MI8, RedMi K60, Google Pixel Watch 1, and Google Pixel Watch 2
 
@@ -72,6 +72,12 @@ Current decision:
 - keep as a future extension or exploratory source only.
 
 ## Data Policy
+
+The current active corpus contains 123 raw logs. Nine playground logs were
+deliberately removed from the active `data_raw` tree and are excluded from all
+current rebuilds: three `dy_L5/2022.07.08` logs and six
+`st_L5/2025.07.30.09.41_2025.07.30.09.45` logs. Historical experiments that
+report 132 logs used the earlier corpus and are not directly comparable.
 
 Do not commit raw large data files to GitHub. Keep raw data local or upload it to a dedicated data storage service if sharing is required.
 

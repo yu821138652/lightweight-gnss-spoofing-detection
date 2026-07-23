@@ -540,7 +540,7 @@ def main() -> None:
     )
     pd.DataFrame(fold_summaries).to_csv(args.output_dir / "fold_summary.csv", index=False, encoding="utf-8-sig")
     metadata = {
-        "protocol": "static_time_block_outer_v1",
+        "protocol": args.output_dir.resolve().name,
         "recordings": int(len(recordings)),
         "outer_folds": int(len(recordings)),
         "time_steps": int(args.time_steps),

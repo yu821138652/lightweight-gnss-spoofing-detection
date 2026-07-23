@@ -93,17 +93,14 @@ def resolve_label_metadata(
         .get(scenario, {})
         .get(session)
     )
-    if session_entry is not None:
-        if isinstance(session_entry, dict):
-            return session_entry.get("status", "reviewed"), "session_config"
-        return "reviewed", "session_config"
-
-    fallback_environments = set(
-        labeling.get("scenario_fallback_environments", ["playground"])
-    )
-    if environment in fallback_environments:
-        return "reviewed", "scenario_fallback"
-    return "needs_review", "missing_session_config"
+    if session_entry is None:
+        return "needs_review", "missing_session_config"
+    if not isinstance(session_entry, dict):
+        raise ValueError(
+            "Session label entries must be mappings with status and intervals: "
+            f"{environment}/{scenario}/{session}"
+        )
+    return str(session_entry.get("status", "needs_review")), "session_config"
 
 
 def build_rows(data_root: Path, data_csv_root: Path, config: dict) -> list[ManifestRow]:
