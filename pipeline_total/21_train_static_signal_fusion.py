@@ -402,10 +402,8 @@ def export_test_misclassifications(
     predictions_path = output_path.with_name(output_path.name.replace("misclassifications", "predictions"))
     count = 0
     model.eval()
-    with (
-        output_path.open("w", newline="", encoding="utf-8-sig") as error_handle,
-        predictions_path.open("w", newline="", encoding="utf-8-sig") as prediction_handle,
-    ):
+    with output_path.open("w", newline="", encoding="utf-8-sig") as error_handle, \
+        predictions_path.open("w", newline="", encoding="utf-8-sig") as prediction_handle:
         error_writer = csv.DictWriter(error_handle, fieldnames=fields)
         prediction_writer = csv.DictWriter(prediction_handle, fieldnames=fields)
         error_writer.writeheader()
