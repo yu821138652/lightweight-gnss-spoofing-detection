@@ -1,6 +1,6 @@
 # pipeline_total 脚本索引
 
-当前状态以 `docs/handoff_status.md` 为准。本目录分为三段：01–10 是既有数据与基础实验链；11–18 是 P0–P5 历史设备级探索；19–21 是最近的静态逐 signal 实验入口。22 是当前推荐的 Session 级标签审查工具。
+当前状态以 `docs/handoff_status.md` 为准。本目录分为三段：01–10 是既有数据与基础实验链；11–18 是 P0–P5 历史设备级探索；19–21、23 是最近的静态逐 signal 实验入口。22 是当前推荐的 Session 级标签审查工具。
 
 ## 01–10：既有数据与诊断链
 
@@ -19,6 +19,7 @@
 | 09 | `09_export_validation_misclassifications.py` | 导出 validation 错分 |
 | 10 | `10_plot_validation_error_review.py` | 生成错分复核图 |
 | 22 | `22_generate_label_review_dashboards.py` | 按完整 Session 整合全设备、全特征的正式标签审查面板 |
+| 23 | `23_evaluate_static_fusion_groups.py` | 用锁定的双分支 checkpoint 输出设备×频段 test 指标 |
 
 注意：
 
@@ -76,31 +77,31 @@ python pipeline_total/22_generate_label_review_dashboards.py `
 
 结果与边界见 `docs/experiment_registry.md`。15/18 需要可选的 LightGBM 依赖；未安装时不应把它们当成基础环境自检入口。
 
-## 19–21：当前静态逐 signal 探索
+## 19–21、23：当前静态逐 signal 探索
 
-这条链复现 2026-07-23 的 7-Session outer-session / inner-time-block W5 实验。它仍是探索协议，不是最终模型。
+这条链复现当前的 7-Session outer-session / inner-time-block W5 实验。当前保留开发基线是 `compact11 + TCN16 + dropout=.1`，产物位于 `output/training/static_timeblock_outer_v2_explore_compact11_tcn16_d10/`；它仍是探索协议，不是最终模型。完整结果、难例和可信度边界见 `docs/handoff_status.md`。
 
 ### 19_generate_static_timeblock_protocol.py
 
 输入当前中央 CSV 和静态 recording 清单。对每个静态 recording 生成一个 outer fold：完整 recording 作为 test，其余 recording 在连续 canonical UTC 时间块内划分 train/validation，并在边界加入 W-1 guard。
 
-当前重训使用的 7-Session 清单位于 `output/protocols/static_time_block_outer_v2/source_recording_manifest.csv`。它只包含当前中央 CSV 中仍存在的 reviewed 静态 Session；不要继续使用包含已剔除短时操场 L5 的历史 4-fold 清单。
+当前保留基线使用的 7-Session 源清单位于 `output/protocols/static_time_block_outer_v2/source_recording_manifest.csv`。它只包含当前中央 CSV 中仍存在的 reviewed 静态 Session；不要继续使用包含已剔除短时操场 L5 的历史 4-fold 清单。以下命令刻意写入独立的 `*_repro_v1` 目录；**不要在保留目录 `static_timeblock_outer_v2_explore_compact11_tcn16_d10/` 中执行训练命令**，以免覆盖已锁定的 checkpoint 和诊断结果。
 
 ```powershell
 python pipeline_total/19_generate_static_timeblock_protocol.py `
   --csv output/processed_gnss_data.csv `
   --source-recording-manifest output/protocols/static_time_block_outer_v2/source_recording_manifest.csv `
-  --output-dir output/protocols/static_time_block_outer_v2 `
+  --output-dir output/protocols/static_time_block_outer_v2_repro_v1 `
   --time-steps 5 `
   --block-epochs 256 `
   --val-fraction 0.20 `
   --segment-gap-seconds 2
 ```
 
-本轮实际输出：
+上述独立复现命令的输出结构：
 
 ```text
-output/protocols/static_time_block_outer_v2/
+output/protocols/static_time_block_outer_v2_repro_v1/
   fold_assignment.csv
   fold_summary.csv
   protocol_metadata.json
@@ -119,9 +120,9 @@ output/protocols/static_time_block_outer_v2/
 
 ```powershell
 python pipeline_total/20_build_static_timeblock_tensors.py `
-  --outer-manifest output/protocols/static_time_block_outer_v2/fold_1/recording_split_manifest.csv `
-  --block-manifest output/protocols/static_time_block_outer_v2/fold_1/epoch_split_manifest.csv `
-  --output-dir output/tensors/static_timeblock_outer_v2/fold_1 `
+  --outer-manifest output/protocols/static_time_block_outer_v2_repro_v1/fold_1/recording_split_manifest.csv `
+  --block-manifest output/protocols/static_time_block_outer_v2_repro_v1/fold_1/epoch_split_manifest.csv `
+  --output-dir output/tensors/static_timeblock_outer_v2_repro_v1/fold_1 `
   --time-steps 5 `
   --block-size 256
 ```
@@ -138,21 +139,27 @@ fold_1/
 
 raw 张量为兼容 builder 仍保存 7 列；训练器按 `feature_names.json` 只选择 5 列，排除 `Cn0DbHz_dt` 和 `Cn0DbHz_std`。stats 为逐 `signal_id` 的 19 维窗口统计。
 
+默认 `--agc-common-mode none` 保持绝对 AGC。`--agc-common-mode same_time_band_median` 会在同一 source、同一时刻、同频段内把 AGC 改为相对中位数残差，并重算 AGC 统计；它仅用于 fold-6 诊断，当前不是保留基线。
+
 ### 21_train_static_signal_fusion.py
 
 训练 raw 因果 TCN/LSTM + stats MLP 双分支。脚本会校验 raw/stats 的特征名、shape、mask、标签和设备元数据是否一致。
+
+`--stats-feature-set full` 是 19 维历史基线。当前默认复现实验使用 `cn0_agc_coverage_rx_time_std`（compact11）：C/N0、AGC 各四项 `Last/Mean/Std/Slope`，接收机时间不确定度的 `Std`，以及两个 coverage ratio。`cn0_agc_coverage` 是 10 维联合消融，不是候选默认值。各 profile 都只在训练读取时按名称选列，所以无需重建张量，且不得覆盖其它 profile 的输出目录。`--test-only` 必须指定与 checkpoint 相同的 feature set，脚本会严格校验其记录的特征名。
 
 先做轻量检查：
 
 ```powershell
 python pipeline_total/21_train_static_signal_fusion.py `
-  --data-dir output/tensors/static_timeblock_outer_v2/fold_1 `
-  --output-dir output/training/static_timeblock_outer_v2/fold_1/tcn `
+  --data-dir output/tensors/static_timeblock_outer_v2_repro_v1/fold_1 `
+  --output-dir output/training/static_timeblock_outer_v2_compact11_repro_v1/fold_1/tcn `
   --encoder tcn `
   --hidden-dim 16 `
-  --dropout 0.3 `
+  --dropout 0.1 `
   --lr 0.001 `
   --weight-decay 0.001 `
+  --raw-feature-set full `
+  --stats-feature-set cn0_agc_coverage_rx_time_std `
   --batch-size 256 `
   --num-workers 0 `
   --dry-run
@@ -162,13 +169,15 @@ python pipeline_total/21_train_static_signal_fusion.py `
 
 ```powershell
 python pipeline_total/21_train_static_signal_fusion.py `
-  --data-dir output/tensors/static_timeblock_outer_v2/fold_1 `
-  --output-dir output/training/static_timeblock_outer_v2/fold_1/tcn `
+  --data-dir output/tensors/static_timeblock_outer_v2_repro_v1/fold_1 `
+  --output-dir output/training/static_timeblock_outer_v2_compact11_repro_v1/fold_1/tcn `
   --encoder tcn `
   --hidden-dim 16 `
-  --dropout 0.3 `
+  --dropout 0.1 `
   --lr 0.001 `
   --weight-decay 0.001 `
+  --raw-feature-set full `
+  --stats-feature-set cn0_agc_coverage_rx_time_std `
   --epochs 30 `
   --batch-size 256 `
   --patience 6 `
@@ -180,15 +189,29 @@ checkpoint 锁定后再读取 test：
 
 ```powershell
 python pipeline_total/21_train_static_signal_fusion.py `
-  --data-dir output/tensors/static_timeblock_outer_v2/fold_1 `
-  --output-dir output/training/static_timeblock_outer_v2/fold_1/tcn `
+  --data-dir output/tensors/static_timeblock_outer_v2_repro_v1/fold_1 `
+  --output-dir output/training/static_timeblock_outer_v2_compact11_repro_v1/fold_1/tcn `
   --encoder tcn `
+  --raw-feature-set full `
+  --stats-feature-set cn0_agc_coverage_rx_time_std `
   --batch-size 256 `
   --num-workers 0 `
   --test-only
 ```
 
 `--test-only` 会从 checkpoint 恢复 encoder、hidden、dropout 和输入维度，并校验当前张量特征；不会信任不一致的命令行网络参数。
+
+### 23_evaluate_static_fusion_groups.py
+
+只读取已锁定 checkpoint，不参与训练或早停。即使 `IsL5` 被模型消融，脚本仍从完整 stats 张量中把它作为只读评估 sidecar，输出 `DeviceName × {L1,L5}` 的 support、TN/FP/FN/TP、Precision、Recall、FAR 和 Macro-F1。
+
+```powershell
+python pipeline_total/23_evaluate_static_fusion_groups.py `
+  --data-dir output/tensors/static_timeblock_outer_v2_repro_v1/fold_6 `
+  --checkpoint output/training/static_timeblock_outer_v2_compact11_repro_v1/fold_6/tcn/best_signal_tcn_stats_mlp_fusion.pt `
+  --output-dir output/training/static_timeblock_outer_v2_compact11_repro_v1/fold_6/tcn `
+  --batch-size 256
+```
 
 ## 生成物策略
 

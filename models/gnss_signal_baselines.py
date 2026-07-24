@@ -141,6 +141,8 @@ class SignalRawStatsFusion(nn.Module):
         self.encoder_name = encoder
         if encoder == "lstm":
             self.raw_encoder = nn.LSTM(raw_input_dim, hidden_dim, batch_first=True)
+        elif encoder == "gru":
+            self.raw_encoder = nn.GRU(raw_input_dim, hidden_dim, batch_first=True)
         elif encoder == "tcn":
             self.raw_encoder = nn.Sequential(
                 CausalConv1d(raw_input_dim, hidden_dim, kernel_size=3), nn.GELU(), nn.Dropout(dropout),
@@ -163,6 +165,9 @@ class SignalRawStatsFusion(nn.Module):
         raw = raw_x.reshape(batch_size * signal_count, raw_x.shape[2], raw_dim)
         if self.encoder_name == "lstm":
             _, (hidden, _) = self.raw_encoder(raw)
+            raw_embedding = hidden[-1]
+        elif self.encoder_name == "gru":
+            _, hidden = self.raw_encoder(raw)
             raw_embedding = hidden[-1]
         else:
             raw_embedding = self.raw_encoder(raw.transpose(1, 2))[:, :, -1]

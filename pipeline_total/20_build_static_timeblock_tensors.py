@@ -403,6 +403,27 @@ def _aggregate_source(df: pd.DataFrame) -> pd.DataFrame:
     )
 
 
+def _apply_agc_common_mode(source: pd.DataFrame, mode: str) -> pd.DataFrame:
+    """Optionally replace AGC with its within-epoch, within-band residual.
+
+    The operation is deliberately performed after duplicate observations have
+    been collapsed and before any raw windows or AGC statistics are made.
+    Thus it uses neither labels nor future epochs.  It removes receiver-level
+    AGC motion shared by all satellites in the same source at one epoch while
+    retaining each signal's deviation from its contemporaneous peers.
+    """
+    if mode == "none":
+        return source
+    if mode != "same_time_band_median":
+        raise ValueError(f"Unsupported AGC common-mode setting: {mode}")
+    result = source.copy()
+    peer_median = result.groupby(
+        ["TimeNanos", "FreqBand"], sort=False, dropna=False
+    )["AgcDb"].transform("median")
+    result["AgcDb"] = result["AgcDb"] - peer_median
+    return result
+
+
 def _make_source_windows(
     source: pd.DataFrame,
     epoch_splits: np.ndarray,
@@ -622,6 +643,7 @@ def build_fold(
     block_manifest_path: Path | None,
     time_steps: int,
     block_size: int,
+    agc_common_mode: str = "none",
 ) -> dict[str, dict[str, int]]:
     configure(time_steps)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -694,7 +716,7 @@ def build_fold(
     for source_key, source_rows in tqdm(df.groupby(source_group_cols, sort=True), desc="Building source windows"):
         key_tuple = tuple(str(source_key[i]) for i in range(3))
         device_name = str(source_key[3]); outer_role = str(source_key[5])
-        source = _aggregate_source(source_rows)
+        source = _apply_agc_common_mode(_aggregate_source(source_rows), agc_common_mode)
         source_times = np.sort(source["TimeNanos"].unique().astype(np.int64))
         source_epoch = epoch_table[
             (epoch_table[KEYS] == np.asarray(key_tuple)).all(axis=1)
@@ -772,6 +794,11 @@ def build_fold(
         "trace_index": "window_trace_index.json",
         "block_size_canonical_epochs": block_size, "guard_epochs": GUARD_EPOCHS,
         "windows_cross_split_boundary": False, "stats_history_crosses_boundary": False,
+        "agc_common_mode": agc_common_mode,
+        "agc_feature_interpretation": (
+            "AgcDb - median(AgcDb | same source, TimeNanos, FreqBand)"
+            if agc_common_mode == "same_time_band_median" else "raw AgcDb"
+        ),
     }
     (output_dir / "tensor_metadata.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
     return {
@@ -789,12 +816,19 @@ def main() -> None:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--time-steps", type=int, default=5)
     parser.add_argument("--block-size", type=int, default=BLOCK_SIZE)
+    parser.add_argument(
+        "--agc-common-mode", choices=("none", "same_time_band_median"), default="none",
+        help="transform AGC before raw windows and AGC statistic construction",
+    )
     args = parser.parse_args()
     if args.time_steps < 2:
         parser.error("--time-steps must be at least 2")
     if args.block_size < args.time_steps:
         parser.error("--block-size must be at least --time-steps")
-    summary = build_fold(args.csv, args.outer_manifest, args.output_dir, args.block_manifest, args.time_steps, args.block_size)
+    summary = build_fold(
+        args.csv, args.outer_manifest, args.output_dir, args.block_manifest,
+        args.time_steps, args.block_size, args.agc_common_mode,
+    )
     print(json.dumps(summary, indent=2))
 
 

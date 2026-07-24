@@ -47,8 +47,31 @@ RAW_FEATURE_NAMES = [
     "PseudorangeRateUncertaintyMetersPerSecond",
     "FreqBand",
 ]
+RAW_FEATURE_SETS: dict[str, tuple[str, ...]] = {
+    # Keep this profile byte-for-byte compatible with historical checkpoints.
+    "full": tuple(RAW_FEATURE_NAMES),
+    # Targeted raw-branch ablations. FreqBand remains in every profile because
+    # it encodes the task's L1/L5 label semantics.
+    "no_agc": tuple(name for name in RAW_FEATURE_NAMES if name != "AgcDb"),
+    "no_cn0": tuple(name for name in RAW_FEATURE_NAMES if name != "Cn0DbHz"),
+    "no_agc_cn0": tuple(
+        name for name in RAW_FEATURE_NAMES if name not in {"AgcDb", "Cn0DbHz"}
+    ),
+}
+STATS_FEATURE_SETS = (
+    "full",
+    "cn0_agc_coverage",
+    "cn0_agc_coverage_rx_time_std",
+    "cn0_coverage_rx_time_std",
+    "no_is_l5",
+    "no_rx_time_stats",
+    "no_pr_rate_stats",
+    "no_uncertainty_stats",
+    "no_agc_std_stats",
+    "no_agc_stats",
+)
 REQUIRED_ARRAYS = {"x", "mask", "y", "is_dynamic", "device_id"}
-ENCODERS = ("lstm", "tcn")
+ENCODERS = ("lstm", "gru", "tcn")
 
 
 def seed_all(seed: int) -> None:
@@ -74,18 +97,101 @@ def load_feature_names(path: Path) -> list[str]:
     return value
 
 
-def load_data_contract(data_dir: Path) -> tuple[Path, Path, list[int], list[str]]:
+def select_raw_feature_names(available_names: list[str], feature_set: str) -> list[str]:
+    """Resolve a named raw-input ablation against tensor metadata."""
+    try:
+        selected = list(RAW_FEATURE_SETS[feature_set])
+    except KeyError as exc:
+        raise ValueError(f"Unsupported raw feature set: {feature_set!r}") from exc
+    missing = [name for name in selected if name not in available_names]
+    if missing:
+        raise ValueError(
+            "Raw tensor metadata is missing selected features for "
+            f"{feature_set!r}: {missing}"
+        )
+    return selected
+
+
+def load_data_contract(
+    data_dir: Path, raw_feature_set: str
+) -> tuple[Path, Path, list[int], list[str], list[str]]:
     raw_dir = data_dir / "raw"
     stats_dir = data_dir / "stats"
     raw_names = load_feature_names(raw_dir / "feature_names.json")
     stats_names = load_feature_names(stats_dir / "feature_names.json")
-    missing = [name for name in RAW_FEATURE_NAMES if name not in raw_names]
+    selected_raw_names = select_raw_feature_names(raw_names, raw_feature_set)
+    raw_indices = [raw_names.index(name) for name in selected_raw_names]
+    return raw_dir, stats_dir, raw_indices, selected_raw_names, stats_names
+
+
+def select_stats_feature_names(
+    available_names: list[str], feature_set: str
+) -> list[str]:
+    """Select a documented stats-feature subset without rebuilding tensors.
+
+    The tensor builder standardizes each continuous statistic independently
+    using train data.  Selecting columns here therefore preserves the same
+    split, labels, raw branch, and train-only scaling as the full baseline.
+    """
+    if feature_set == "full":
+        selected = available_names.copy()
+    elif feature_set in {
+        "cn0_agc_coverage",
+        "cn0_agc_coverage_rx_time_std",
+        "cn0_coverage_rx_time_std",
+    }:
+        selected = [
+            name
+            for name in available_names
+            if name.startswith("Cn0DbHz")
+            or (
+                feature_set != "cn0_coverage_rx_time_std"
+                and name.startswith("AgcDb")
+            )
+            or name.startswith("SignalHistoryRatio")
+            or name.startswith("AgcObservedRatio")
+            or (
+                feature_set
+                in {"cn0_agc_coverage_rx_time_std", "cn0_coverage_rx_time_std"}
+                and name.startswith("ReceivedSvTimeUncertaintyNanosStd")
+            )
+        ]
+    elif feature_set == "no_is_l5":
+        selected = [name for name in available_names if name != "IsL5"]
+    elif feature_set == "no_rx_time_stats":
+        selected = [
+            name for name in available_names
+            if not name.startswith("ReceivedSvTimeUncertaintyNanos")
+        ]
+    elif feature_set == "no_pr_rate_stats":
+        selected = [
+            name for name in available_names
+            if not name.startswith("PseudorangeRateUncertaintyMetersPerSecond")
+        ]
+    elif feature_set == "no_uncertainty_stats":
+        selected = [
+            name
+            for name in available_names
+            if not name.startswith("ReceivedSvTimeUncertaintyNanos")
+            and not name.startswith("PseudorangeRateUncertaintyMetersPerSecond")
+        ]
+    elif feature_set == "no_agc_std_stats":
+        selected = [name for name in available_names if not name.startswith("AgcDbStd")]
+    elif feature_set == "no_agc_stats":
+        selected = [name for name in available_names if not name.startswith("AgcDb")]
+    else:
+        raise ValueError(f"Unsupported stats feature set: {feature_set!r}")
+
+    if not selected:
+        raise ValueError(f"Stats feature set {feature_set!r} selected no features")
+    return selected
+
+
+def feature_indices(available_names: list[str], selected_names: list[str], kind: str) -> list[int]:
+    missing = [name for name in selected_names if name not in available_names]
     if missing:
-        raise ValueError(
-            f"Raw tensor metadata {raw_dir / 'feature_names.json'} is missing required features: {missing}"
-        )
-    raw_indices = [raw_names.index(name) for name in RAW_FEATURE_NAMES]
-    return raw_dir, stats_dir, raw_indices, stats_names
+        raise ValueError(f"{kind} tensor metadata is missing selected features: {missing}")
+    return [available_names.index(name) for name in selected_names]
 
 
 class FusionDataset(Dataset):
@@ -96,6 +202,7 @@ class FusionDataset(Dataset):
         raw_feature_count: int,
         stats_feature_count: int,
         raw_feature_indices: list[int],
+        stats_feature_indices: list[int],
     ) -> None:
         if not raw_path.is_file():
             raise FileNotFoundError(raw_path)
@@ -141,7 +248,7 @@ class FusionDataset(Dataset):
                 raise ValueError(f"Active labels must be binary in {raw_path}; found {unexpected}")
 
             self.raw = torch.from_numpy(raw_x[..., raw_feature_indices].copy()).float()
-            self.stats = torch.from_numpy(stats_x.copy()).float()
+            self.stats = torch.from_numpy(stats_x[..., stats_feature_indices].copy()).float()
             self.mask = torch.from_numpy(mask.copy()).bool()
             self.y = torch.from_numpy(labels.copy()).long()
 
@@ -159,6 +266,7 @@ def load_split(
     raw_feature_count: int,
     stats_feature_count: int,
     raw_feature_indices: list[int],
+    stats_feature_indices: list[int],
 ) -> FusionDataset:
     return FusionDataset(
         raw_dir / f"{split}.npz",
@@ -166,6 +274,7 @@ def load_split(
         raw_feature_count,
         stats_feature_count,
         raw_feature_indices,
+        stats_feature_indices,
     )
 
 
@@ -402,6 +511,7 @@ def checkpoint_architecture(checkpoint: dict[str, Any]) -> dict[str, Any]:
 def validate_checkpoint_inputs(
     architecture: dict[str, Any],
     data: FusionDataset,
+    raw_feature_names: list[str],
     stats_feature_names: list[str],
     split: str,
 ) -> None:
@@ -416,14 +526,14 @@ def validate_checkpoint_inputs(
             f"Checkpoint expects {architecture['stats_input_dim']} stats features, but {split} has "
             f"{data.stats.shape[-1]}"
         )
-    if architecture["raw_feature_names"] != RAW_FEATURE_NAMES:
+    if architecture["raw_feature_names"] != raw_feature_names:
         raise ValueError(
-            "Checkpoint raw feature order differs from the required data contract: "
-            f"{architecture['raw_feature_names']} != {RAW_FEATURE_NAMES}"
+            "Checkpoint raw feature names/order differ from selected raw features: "
+            f"{architecture['raw_feature_names']} != {raw_feature_names}"
         )
     checkpoint_stats_names = architecture["stats_feature_names"]
     if checkpoint_stats_names is not None and checkpoint_stats_names != stats_feature_names:
-        raise ValueError("Checkpoint stats feature names/order differ from stats/feature_names.json")
+        raise ValueError("Checkpoint stats feature names/order differ from selected stats features")
 
 
 def parse_args() -> argparse.Namespace:
@@ -453,6 +563,24 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--weight-decay", type=float, default=1e-4)
     parser.add_argument("--hidden-dim", type=int, default=32)
     parser.add_argument("--dropout", type=float, default=0.1)
+    parser.add_argument(
+        "--raw-feature-set",
+        choices=tuple(RAW_FEATURE_SETS),
+        default="full",
+        help=(
+            "Named raw-input selection. 'full' preserves the historical five raw features; "
+            "ablation profiles are recorded in the checkpoint and checked during test-only evaluation."
+        ),
+    )
+    parser.add_argument(
+        "--stats-feature-set",
+        choices=STATS_FEATURE_SETS,
+        default="full",
+        help=(
+            "Named selection from stats/feature_names.json. Profiles are recorded in "
+            "the checkpoint and strictly checked during test-only evaluation."
+        ),
+    )
     parser.add_argument("--patience", type=int, default=6)
     parser.add_argument("--seed", type=int, default=2026)
     parser.add_argument("--num-workers", type=int, default=0)
@@ -494,12 +622,25 @@ def main() -> None:
     args = parse_args()
     seed_all(args.seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    raw_dir, stats_dir, raw_feature_indices, stats_feature_names = load_data_contract(args.data_dir)
+    (
+        raw_dir,
+        stats_dir,
+        raw_feature_indices,
+        raw_feature_names,
+        available_stats_feature_names,
+    ) = load_data_contract(args.data_dir, args.raw_feature_set)
+    stats_feature_names = select_stats_feature_names(
+        available_stats_feature_names, args.stats_feature_set
+    )
+    stats_feature_indices = feature_indices(
+        available_stats_feature_names, stats_feature_names, "Stats"
+    )
     raw_feature_count = len(load_feature_names(raw_dir / "feature_names.json"))
-    stats_feature_count = len(stats_feature_names)
+    stats_feature_count = len(available_stats_feature_names)
 
     train = load_split(
-        "train", raw_dir, stats_dir, raw_feature_count, stats_feature_count, raw_feature_indices
+        "train", raw_dir, stats_dir, raw_feature_count, stats_feature_count,
+        raw_feature_indices, stats_feature_indices,
     )
     if len(train) == 0:
         raise ValueError("Training split contains no windows")
@@ -517,12 +658,17 @@ def main() -> None:
         if not isinstance(checkpoint, dict) or "state_dict" not in checkpoint:
             raise ValueError(f"Checkpoint {checkpoint_path} does not contain a model state_dict")
         architecture = checkpoint_architecture(checkpoint)
-        validate_checkpoint_inputs(architecture, train, stats_feature_names, "train")
+        validate_checkpoint_inputs(
+            architecture, train, raw_feature_names, stats_feature_names, "train"
+        )
         test = load_split(
-            "test", raw_dir, stats_dir, raw_feature_count, stats_feature_count, raw_feature_indices
+            "test", raw_dir, stats_dir, raw_feature_count, stats_feature_count,
+            raw_feature_indices, stats_feature_indices,
         )
         validate_compatible(train, test, "test")
-        validate_checkpoint_inputs(architecture, test, stats_feature_names, "test")
+        validate_checkpoint_inputs(
+            architecture, test, raw_feature_names, stats_feature_names, "test"
+        )
         model = make_model(
             architecture["raw_input_dim"],
             architecture["stats_input_dim"],
@@ -544,6 +690,10 @@ def main() -> None:
         metrics["parameter_count"] = parameter_count
         metrics["checkpoint"] = str(checkpoint_path)
         metrics["encoder"] = architecture["encoder"]
+        metrics["raw_feature_set"] = str(checkpoint.get("raw_feature_set", args.raw_feature_set))
+        metrics["raw_feature_names"] = raw_feature_names
+        metrics["stats_feature_set"] = str(checkpoint.get("stats_feature_set", args.stats_feature_set))
+        metrics["stats_feature_names"] = stats_feature_names
         model_name = str(
             checkpoint.get("model", f"signal_{architecture['encoder']}_stats_mlp_fusion")
         )
@@ -566,7 +716,8 @@ def main() -> None:
         return
 
     val = load_split(
-        "val", raw_dir, stats_dir, raw_feature_count, stats_feature_count, raw_feature_indices
+        "val", raw_dir, stats_dir, raw_feature_count, stats_feature_count,
+        raw_feature_indices, stats_feature_indices,
     )
     validate_compatible(train, val, "val")
     encoder = str(args.encoder)
@@ -649,9 +800,11 @@ def main() -> None:
                     "raw_time_steps": int(train.raw.shape[-2]),
                     "raw_input_dim": int(train.raw.shape[-1]),
                     "raw_feature_indices": raw_feature_indices,
-                    "raw_feature_names": RAW_FEATURE_NAMES,
+                    "raw_feature_names": raw_feature_names,
+                    "raw_feature_set": args.raw_feature_set,
                     "stats_input_dim": int(train.stats.shape[-1]),
                     "stats_feature_names": stats_feature_names,
+                    "stats_feature_set": args.stats_feature_set,
                     "hidden_dim": args.hidden_dim,
                     "dropout": args.dropout,
                     "weight_decay": args.weight_decay,
@@ -662,7 +815,17 @@ def main() -> None:
                 checkpoint_path,
             )
             (args.output_dir / f"val_metrics_{model_name}.json").write_text(
-                json.dumps({**metrics, "parameter_count": parameter_count}, indent=2),
+                json.dumps(
+                    {
+                        **metrics,
+                        "parameter_count": parameter_count,
+                        "raw_feature_set": args.raw_feature_set,
+                        "raw_feature_names": raw_feature_names,
+                        "stats_feature_set": args.stats_feature_set,
+                        "stats_feature_names": stats_feature_names,
+                    },
+                    indent=2,
+                ),
                 encoding="utf-8",
             )
         else:
