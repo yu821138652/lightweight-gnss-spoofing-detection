@@ -141,6 +141,19 @@ raw 张量为兼容 builder 仍保存 7 列；训练器按 `feature_names.json` 
 
 默认 `--agc-common-mode none` 保持绝对 AGC。`--agc-common-mode same_time_band_median` 会在同一 source、同一时刻、同频段内把 AGC 改为相对中位数残差，并重算 AGC 统计；它仅用于 fold-6 诊断，当前不是保留基线。
 
+标签敏感性实验可显式使用 `--label-policy l5_l1_positive --label-config configs/preprocessing.yml`：它保留原标签，并把配置中 reviewed `st_L5` 欺骗区间内的同期 L1 endpoint 临时改为正类。运行时必须指定独立的 `--output-dir`，不要覆盖正式张量；`tensor_metadata.json` 会记录策略、配置 SHA-256、实际区间快照、改标行数和受影响 Session。该策略不修改中央 CSV 或 YAML，也不代表已确认这类 L1 必然属于欺骗；若没有解析到 reviewed 区间、没有匹配行或没有实际改标，构建器会直接报错。示例：
+
+```powershell
+python pipeline_total/20_build_static_timeblock_tensors.py `
+  --outer-manifest output/protocols/static_time_block_outer_v2/fold_1/recording_split_manifest.csv `
+  --block-manifest output/protocols/static_time_block_outer_v2/fold_1/epoch_split_manifest.csv `
+  --output-dir output/tensors/static_timeblock_outer_v2_l5_l1_positive/fold_1 `
+  --time-steps 5 `
+  --block-size 256 `
+  --label-policy l5_l1_positive `
+  --label-config configs/preprocessing.yml
+```
+
 ### 21_train_static_signal_fusion.py
 
 训练 raw 因果 TCN/LSTM + stats MLP 双分支。脚本会校验 raw/stats 的特征名、shape、mask、标签和设备元数据是否一致。
