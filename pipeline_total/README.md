@@ -1,4 +1,4 @@
-﻿﻿﻿# pipeline_total 脚本索引
+﻿# pipeline_total 脚本索引
 
 当前状态以 `docs/handoff_status.md` 为准。本目录分为三段：01–10 是既有数据与基础实验链；11–18 是 P0–P5 历史设备级探索；19–21、23 是最近的静态逐 signal 实验入口。22 是当前推荐的 Session 级标签审查工具。
 

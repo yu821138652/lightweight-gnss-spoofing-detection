@@ -1,89 +1,39 @@
-# 项目交接状态（2026-07-26）
+﻿# 项目交接状态（2026-07-27）
 
-本文是当前工作区的唯一状态入口。它说明已经确认的数据事实、最近的探索结论、结果边界、可复现入口和下一步建议。历史 P0–P5 结果只用于追溯，不代表当前已经锁定的主线。
+本文是当前工作区的唯一状态入口。它说明已经确认的数据事实、最近的探索结论、结果边界和可复现入口。历史 P0–P5 结果只用于追溯，不代表当前已经锁定的主线。
 
-## 当前状态快照（2026-07-26）
+## 当前状态快照（2026-07-27）
 
-> 本节是当前静态逐 `signal_id` 路线的权威结论；文中后续保留的
-> `static_timeblock_outer_v2`、10 维联合消融等内容是其形成过程中的
-> 基线或诊断记录。若数值冲突，以本节为准。
+> 本节是当前静态逐 `signal_id` 路线的权威状态。后续各节保留此前 7-fold 基线、标签敏感性和历史实验的形成过程；若数值冲突，以本节和 [Fold 6 诊断快照](static_signal_fold6_diagnostics_20260727.md) 为准。
 
-### 任务、数据和协议
+### 任务、数据和结果边界
 
-- 当前可比较的主实验只使用 `LabelStatus=reviewed` 的**静态** `st_*` 数据；动态数据没有进入这轮训练。因此操场动态 L15 的标签区间修订 `[260990, 261020]` 是当前数据政策的一部分，但不会直接改变下述 7-fold 静态指标。
-- 真正独立的测试单位只有 7 个完整静态 Session：新主楼 L1×1、L5×2、L1+L5×1；操场 L1、L5、L1+L5 各 1。每折以一个完整 Session 作 outer test，其余 6 个 Session 按连续 UTC 时间块作 inner train/validation。
-- 每个样本是一个 `signal_id` 的 W5 因果窗口，标签为窗口末端历元；窗口不会跨 train/validation 边界、4 个历元 guard 或 2 秒以上的来源断档。连续特征只用训练块拟合、按设备标准化。
-- 当前 7 个 outer test 都已被用于模型、特征和错误诊断决策。协议没有训练泄漏，但结果只能称为**迭代式交叉验证开发结果**，不再是新的独立盲测。
+- 当前可比较的主实验使用 `LabelStatus=reviewed` 的静态 `st_*` 数据。动态数据没有进入本轮训练，也不应与此处结果横向比较。
+- 真正独立的测试单位只有 7 个完整静态 Session。当前 7 个 outer test 均已被读取并参与过误差诊断；它们不再是新的独立盲测。
+- 完整 7-fold `compact11 + TCN16 + dropout=0.1` 继续作为保留对照基线。它回答的是清理后静态 Session 协议下的完整折次表现，不是最终模型声明。
+- 2026-07-26 至 27 的 E9-E11 仅围绕已反复读取的操场长 L5 Fold 6 做诊断。它们使用 all-development fixed-epoch refit，且 E10/E11 在测试时将非 L5 endpoint 强制为正常；这些数字只用于定位 L5 的错误结构，不能与通用 7-fold 基线的 Macro-F1 直接排序。
 
-### 当前保留基线：`compact11 + TCN16 + dropout=0.1`
+### Fold 6 已确认事实
 
-这是目前唯一在完整 7-fold 中同时取得最高 pooled 分数、最低参数量之一，并在操场 L5 不比其它完整候选更差的配置；它是**保留基线，不是最终模型**。
+- E9a 将此前落在 validation 的短新主楼 L5 攻击片段纳入 all-development refit 后，Recall 从 50.33% 升至 55.82%；E9b 的 Session 均匀采样只进一步升至 56.93%，说明样本量不是主因。
+- E10 的 L5-only 专家把 L5 Recall 提升到 60.58%，E11 的共享编码器加设备条件头进一步升至 62.73%，但仍远低于 80% 目标，且 L5 FAR 分别为 11.46% 和 11.92%。
+- 设备错误方向不一致：E11 中 Pixel 6 的 Recall 为 4.06%、FAR 为 0；Mate40 的 Recall 为 94.20%、FAR 为 50.51%；RedMi K60 的 Recall 为 50.80%、FAR 为 0.15%。这不是一个全局阈值或单纯样本失衡能够同时解决的问题。
+- 只读阈值诊断表明 Pixel 6 的分数排序本身较好但默认阈值失配；Mate40、RedMi K60 与 MI8 在可接受 FAR 下的分数排序仍不足。详细数值、协议差异和解释见诊断快照。
 
-- 产物：`output/training/static_timeblock_outer_v2_explore_compact11_tcn16_d10/`。
-- Raw TCN 输入 5 维：`Cn0DbHz`、`AgcDb`、`ReceivedSvTimeUncertaintyNanos`、`PseudorangeRateUncertaintyMetersPerSecond`、`FreqBand`。CSV 中已有的 `Cn0DbHz_dt`、`Cn0DbHz_std` 不进入训练。
-- stats MLP 输入 11 维：C/N0 四统计（Last/Mean/Std/Slope）、AGC 四统计、接收机时间不确定度 Std、`SignalHistoryRatioW5`、`AgcObservedRatioW5`。
-- TCN hidden=16、dropout=0.1、1,880 参数；AdamW `lr=1e-3`、weight decay=`1e-3`、class-balanced CE、batch=256、最多 30 epochs、patience=6、seed=2026、全局阈值 0.5。
+### 当前问题陈述
 
-| 聚合口径 | Macro-F1 | 正类 F1 | Precision | Recall | FAR | Accuracy |
-|---|---:|---:|---:|---:|---:|---:|
-| 2,077,565 个 signal endpoints pooled | **0.8639** | 0.7980 | 0.8038 | 0.7922 | 6.78% | 89.58% |
-| 7 个 outer Session 等权 | **0.8502 ± 0.0933** | — | — | 81.63% ± 15.93% | 5.70% ± 4.55% | — |
-
-与可比的原 19 维 stats TCN16（dropout=0.3、2,024 参数）相比，pooled Macro-F1 从 0.8546 升到 0.8639，Recall 从 77.68% 升到 79.22%，FAR 从 7.18% 降到 6.78%；但 Session 等权 Macro-F1 只从 0.8495 升到 0.8502。这是小幅工程改进，不足以说明跨场景问题已经解决。
-
-| fold | outer test Session | Macro-F1 | Recall | FAR |
-|---:|---|---:|---:|---:|
-| 1 | 新主楼 `st_L1/19.22` | 0.9316 | 88.05% | 2.98% |
-| 2 | 新主楼 `st_L5/20.16` | 0.7777 | 85.97% | 8.84% |
-| 3 | 新主楼 `st_L5/20.36` | 0.9118 | 99.77% | 2.14% |
-| 4 | 新主楼 `st_L_15/18.42` | 0.9000 | 81.20% | 3.21% |
-| 5 | 操场 `st_L1/08.40–09.12` | 0.9113 | 95.53% | 9.33% |
-| 6 | 操场 `st_L5/09.48–10.14` | **0.6761** | **55.86%** | **12.74%** |
-| 7 | 操场 `st_L_15/07.30–08.01` | 0.8429 | 65.03% | 0.66% |
-
-### `st_L5` 区间内同期 L1 改正类：标签敏感性实验（未采纳）
-
-2026-07-25 使用完全相同的 7-fold 协议和保留模型，做了一次独立标签策略实验：保留正式标签，同时把 reviewed `st_L5` 欺骗区间内的同期 L1 endpoint 临时由 0 改为 1。实验只写入独立张量和训练目录，没有修改中央 CSV、`configs/preprocessing.yml`、原张量或原 checkpoint。
-
-| 口径 | Pooled Macro-F1 | Precision | Recall | FAR | Session 等权 Macro-F1 |
-|---|---:|---:|---:|---:|---:|
-| 正式标签保留基线 | 0.8639 | 80.38% | 79.22% | 6.78% | 0.8502 ± 0.0933 |
-| L5 区间内 L1 同标正类并重训 | 0.8655 | 88.07% | 75.43% | 4.96% | 0.8818 ± 0.0890 |
-
-fold 2、3、6 的测试真值随策略改变，不能把表面 F1 上升直接解释为模型能力提升。固定旧 checkpoint、只按新标签重新评分后，再与新标签重训比较，fold 2/3/6 Macro-F1 分别由 `0.7648/0.8336/0.6428` 升至 `0.8450/0.9551/0.7122`，说明重训确实学到了一部分新增 L1 正类；但操场长 L5 仍没有质变。
-
-最关键的反证是：操场长 L5 中，新标签下 L1 Recall 为 54.91%，但不同设备从 0.09% 到 97.80% 极不稳定；原本 L5 正类的 Recall 又从 55.86% 降至 37.06%。Huawei L5 Recall 从 81.50% 降至 66.53%，RedMi K60 L5 从 46.82% 降至 23.72%。因此该策略只保留为“广义受影响/伴随干扰”口径的敏感性对照，不替代正式二分类标签，也不改变当前保留基线。
-
-### 未解决的核心问题
-
-操场长 L5（fold 6）仍是当前主瓶颈。即使使用保留基线，Huawei Mate40 的 L1 FAR 为 39.40%，Huawei L5 的 Recall/FAR 为 81.50%/23.08%，RedMi K60 L5 的 Recall/FAR 为 46.82%/0%。这表明模型仍在不同设备间以相反方式利用 AGC 等特征：对 Huawei 容易误报，对 RedMi 容易漏报。
-
-最近探索没有形成可推广的突破：
-
-- `no_IsL5` 的 Session 等权 F1 虽为 0.8543，但操场 L5 降至 0.6119；不能替代当前基线。
-- TCN32 pooled Macro-F1 为 0.8602、参数增至 6,296，操场 L5 为 0.6596；扩大容量没有价值。LSTM/GRU 也没有同时改善 Recall 与 FAR。
-- W3/W5 pilot 分别为 0.6226/0.5847。该筛查使用 `time_steps=7 / guard=6` 的预生成协议，而主基线为 W5 / guard=4，不能作为严格窗口长度消融；但两者均未给出值得继续窗口搜索的正向证据。
-- 删 raw+stats AGC 的 fold 6 可达 0.6998，AGC 同时刻同频段中位数残差可达 0.6889；两者都压低 Huawei 误报，却把 Huawei L5 Recall 压至约 54%，且跨折不稳定。因此它们只作为“AGC 共模/设备域偏移存在”的诊断证据，不是候选模型。
-- 其余简单 stats 消融、模型结构和小幅超参数调整都没有达到“困难 L5 提升约 0.05 或错误结构同时改善”的门槛。
-
-### 当前结论与建议
-
-1. 将 `compact11 + TCN16 + dropout=0.1` 保留为后续对照基线，不再围绕模型容量、普通窗口长度或简单删特征进行完整 7-fold 搜索。
-2. 下一阶段优先处理数据和评价：建立 `trusted / questionable / excluded` Session 清单，复核操场长 L5 的 Huawei/RedMi 原始曲线和标签语义，并取得真正未参与过调参的独立 Session。
-3. 后续报告必须同时给出 pooled、Session 等权，以及 Session×Device×Band 的最坏组指标；不能用大 Session 的 pooled Accuracy 掩盖操场 L5 的失败。
-4. 历史设备级 LightGBM 的约 0.916x 分数属于不同任务、旧数据/标签和已反复使用的测试协议，不能与本节的卫星级结果混称“当前最佳”。
-5. `l5_l1_positive` 仅是显式可复现的实验策略；在老师确认目标语义前，正式标签仍保持原口径。
+当前证据支持以下问题描述，而非“某个模型已经优于其他模型”：在已审核的静态目标频段标签下，跨 Session 的绝对 C/N0/AGC 及其短历史统计会随设备和环境变化。模型对 Mate40 偏向过报、对 RedMi K60 和 Pixel 6 偏向漏报。已有频段路由、辅助任务、跨频段上下文、全开发集 refit、Session 均匀采样、L5-only 专家和设备条件头均未在同一 Fold 6 上同时获得高 Recall 与低 FAR。
 
 ## 1. 一句话结论
 
 项目目前仍处于“数据与评估协议收敛”阶段，尚未确定最终模型。当前静态逐 `signal_id` 的保留基线是 `compact11 + TCN16 + dropout=0.1`；它在完整 7-fold 的 pooled Macro-F1 为 0.8639，但 Session 等权均值仅为 `0.8502 ± 0.0933`，操场长 L5 仍只有 0.6761。跨 Session、设备和场景的波动仍很大；动态场景以及操场 L5/L15 的主要瓶颈更像是标签可信度、设备观测差异和特征域偏移，而不是模型容量不足。
 
-因此，当前不应继续围绕某个模型反复调参。交接后的第一优先级应是建立可信 Session 清单、逐场景复核数据，并明确新的独立测试数据；模型比较应在这些前提固定后重跑。
+因此，当前没有可作为最终部署结论的模型；任何结果引用都必须保留标签口径、Session 协议和 test 已被多次用于诊断的边界。
 
 ## 2. Git 与工作区基线
 
 - 当前分支：`main`。
-- 本次同步前本地 `HEAD` 与 `origin/main` 均为 `86018cc`；后续状态以 Git 最新提交为准。
+- 具体提交状态以 `git log --oneline` 和 `git status --short` 为准；本文不固定某一个会随同步变化的 HEAD。
 - 本次同步新增可选 `l5_l1_positive` 标签策略、复现说明和上述敏感性实验结论；正式标签配置及保留基线均未改变。
 - 2026-07-23 重新生成的两套 label plots 位于被 Git 忽略的 `output/`，不会进入仓库。
 - Git 历史中的 P0–P5 是设备级路线的探索记录；保留代码与实验台账用于追溯，但不再将 LightGBM、DLinear 或某个双分支网络描述为已锁定主模型。
@@ -265,17 +215,17 @@ python pipeline_total/20_build_static_timeblock_tensors.py `
 
 张量、checkpoint 和训练日志仍属于可重建产物；当前 `static_timeblock_outer_v2` 只因本轮交接与新旧对照暂时保留，指标稳定写入文档后可再归档或删除。当前两套 plots 只是本轮标签复核需要。旧产物已集中迁入被 Git 忽略的 `output/_rebuildable_archive_20260722/`。此外，旧 `new_building_label_plots/` 与 `playground_label_plots/` 未自动删除，其中旧操场目录仍含已剔除 Session 的 63 张残留图，不能再作为当前数据口径使用。当前执行环境的递归删除审批服务异常，因此磁盘空间尚未真正释放；确认无需恢复后可人工删除旧目录和归档。历史指标已经压缩进本文和 P0–P5 台账。
 
-## 9. 推荐交接顺序
+## 9. 交接阅读顺序
 
-1. 先按 Session 建立 `trusted / questionable / excluded` 数据清单，重点复核操场动态 L5、动态 L15、静态长 L5 和静态 L15；不要把“reviewed”简单等同于物理真值。
-2. 明确论文主任务以卫星/逐 signal 检测为主，设备级聚合作为部署层或辅助实验；不要在两种评价单位之间混用指标。
-3. 新增独立录制或保留真正未触碰的 Session。当前只有 7 个静态录制，再复杂的交叉验证也不能创造新的环境多样性。
-4. 固定可信数据、特征和 split 后，再重跑 MLP、TCN/LSTM、raw+stats 等少量轻量基线；在此之前将 compact11 TCN16 d=.1 作为唯一对照。优先报告 Session×Device 宏平均、最差设备 FAR、攻击 Recall 和检测时延。
-5. 在数据问题没有澄清前，不建议继续融合更多模型或扩大网络容量。若以后做融合，应先证明不同模型的错误具有互补性，而不是只比较 pooled Accuracy。
+1. 先读本文的当前状态快照和 `docs/static_signal_fold6_diagnostics_20260727.md`，区分完整 7-fold 对照与 Fold 6 迭代式诊断。
+2. 再核对 `configs/preprocessing.yml`、`docs/data_inventory.md` 和 label review 产物，确认要引用的标签口径与数据快照。
+3. 复现实验时仅使用 `pipeline_total/README.md` 中对应脚本、张量目录和 checkpoint 记录；训练输出仍写入被 Git 忽略的 `output/`。
+4. 对外陈述结果时保留协议、标签语义和 test 已被使用的边界，不将单一折次或不同任务的指标混为“当前最佳”。
 
 ## 10. 文档入口
 
 - 当前状态与交接：本文。
+- Fold 6 诊断结果快照：`docs/static_signal_fold6_diagnostics_20260727.md`。
 - 组会汇报提纲与讲稿：`docs/group_meeting_brief_20260725.md`。
 - P0–P5 历史实验：`docs/experiment_registry.md`。
 - 数据清单：`docs/data_inventory.md`；本地清单由上述脚本生成到 `output/`。
