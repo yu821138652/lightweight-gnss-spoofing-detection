@@ -1,0 +1,11 @@
+Environment,Scenario,Session,split
+new_building,dy_L5,2025.07.29.20.52_新主楼,train
+new_building,dy_L_15,2025.07.29.17.32_新主楼,train
+new_building,dy_L_15,2025.07.29.18.27_新主楼,train
+new_building,dy_L_15,2025.07.29.18.33_新主楼,train
+playground,dy_L5,2025.07.30.10.40_2025.07.30.10.44（动态L5）,train
+playground,dy_L5,2025.07.30.10.44_2025.07.30.10.49（动态L5）,train
+playground,dy_L5,2025.07.30.10.49_2025.07.30.10.52（动态L5）,train
+playground,dy_L_15,2025.07.30.08.12_2025.07.30.08.16（动态L1+L5）,train
+playground,dy_L_15,2025.07.30.08.26_2025.07.30.08.32（动态L1+L5）,train
+playground,dy_L_15,2025.07.30.08.33_2025.07.30.08.36（动态L1+L5）,train

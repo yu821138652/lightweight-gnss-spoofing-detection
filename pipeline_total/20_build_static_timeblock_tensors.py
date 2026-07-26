@@ -622,6 +622,7 @@ def _make_source_windows(
     recording_id: int,
     source_id: int,
     signal_to_id: dict[str, int],
+    is_dynamic: bool = False,
 ) -> dict[str, dict[str, list[np.ndarray]]]:
     """Build all eligible raw/stats windows for one source in one pass."""
     def empty_part() -> dict[str, list[np.ndarray]]:
@@ -713,7 +714,7 @@ def _make_source_windows(
             continue
         out = outputs[split_filter]
         out["raw"].append(raw_x); out["stats"].append(stats_x); out["mask"].append(mask)
-        out["y"].append(y); out["dynamic"].append(np.asarray(False)); out["device"].append(np.asarray(device_id))
+        out["y"].append(y); out["dynamic"].append(np.asarray(is_dynamic)); out["device"].append(np.asarray(device_id))
         out["window_time_nanos"].append(np.asarray(endpoint, dtype=np.int64))
         out["endpoint_utc_millis"].append(np.asarray(np.nanmedian(endpoint_utc_values), dtype=np.float64))
         out["endpoint_tow"].append(np.asarray(np.nanmedian(endpoint_tow_values), dtype=np.float64))
