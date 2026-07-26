@@ -18,6 +18,7 @@ import yaml
 
 
 SPLITS = ("train", "val", "test")
+ROOT = Path(__file__).resolve().parents[1]
 REQUIRED_STATS = (
     "Cn0DbHzLastW5", "Cn0DbHzSlopeW5", "AgcDbLastW5", "AgcDbStdW5",
     "ReceivedSvTimeUncertaintyNanosStdW5", "IsL5", "SignalHistoryRatioW5",
@@ -28,7 +29,7 @@ REQUIRED_STATS = (
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--signal-data-dir", type=Path, required=True)
-    parser.add_argument("--label-config", type=Path, default=Path("configs/preprocessing.yml"))
+    parser.add_argument("--label-config", type=Path, default=ROOT / "configs" / "preprocessing.yml")
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--feature-set", choices=("all", "l1_only", "l5_only", "no_cross"), default="all")
     parser.add_argument("--overwrite", action="store_true")
