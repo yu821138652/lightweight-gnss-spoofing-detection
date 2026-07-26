@@ -50,7 +50,7 @@ BLOCK_SIZE = 256
 VALIDATION_FRACTION = 0.20
 GUARD_EPOCHS = TIME_STEPS - 1
 
-RAW_FEATURES = [
+SOURCE_RAW_FEATURES = [
     "Cn0DbHz",
     "Cn0DbHz_dt",
     "Cn0DbHz_std",
@@ -59,13 +59,21 @@ RAW_FEATURES = [
     "PseudorangeRateUncertaintyMetersPerSecond",
     "FreqBand",
 ]
+CAUSAL_REFERENCE_FEATURES = [
+    "Cn0DbHzCausalReferenceDelta",
+    "Cn0DbHzCausalReferenceZ",
+    "AgcDbCausalReferenceDelta",
+    "AgcDbCausalReferenceZ",
+    "CausalReferenceReady",
+]
+RAW_FEATURES = SOURCE_RAW_FEATURES.copy()
 STAT_FEATURES = [
     "Cn0DbHz",
     "AgcDb",
     "ReceivedSvTimeUncertaintyNanos",
     "PseudorangeRateUncertaintyMetersPerSecond",
 ]
-RAW_NAMES = RAW_FEATURES
+RAW_NAMES = RAW_FEATURES.copy()
 STAT_NAMES: list[str] = []
 STAT_SCALED_COUNT = 16
 
@@ -73,10 +81,14 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - [%(levelname)s] - 
 LOG = logging.getLogger(__name__)
 
 
-def configure(time_steps: int) -> None:
-    global TIME_STEPS, GUARD_EPOCHS, STAT_NAMES
+def configure(time_steps: int, causal_reference_epochs: int = 0) -> None:
+    global TIME_STEPS, GUARD_EPOCHS, STAT_NAMES, RAW_FEATURES, RAW_NAMES
     TIME_STEPS = int(time_steps)
     GUARD_EPOCHS = max(TIME_STEPS - 1, 0)
+    RAW_FEATURES = SOURCE_RAW_FEATURES.copy()
+    if causal_reference_epochs:
+        RAW_FEATURES.extend(CAUSAL_REFERENCE_FEATURES)
+    RAW_NAMES = RAW_FEATURES.copy()
     suffix = f"W{TIME_STEPS}"
     STAT_NAMES = [
         f"{feature}{stat}"
@@ -392,7 +404,7 @@ def _aggregate_source(df: pd.DataFrame) -> pd.DataFrame:
         "TOW": "median",
         "FreqBand": "median",
         "utcTimeMillis": "median",
-        **{feature: "median" for feature in RAW_FEATURES if feature != "FreqBand"},
+        **{feature: "median" for feature in SOURCE_RAW_FEATURES if feature != "FreqBand"},
     }
     # Keep only fields actually present in the processed CSV.
     aggregation = {k: v for k, v in aggregation.items() if k in df.columns}
@@ -401,6 +413,56 @@ def _aggregate_source(df: pd.DataFrame) -> pd.DataFrame:
         .agg(aggregation)
         .sort_values(["TimeNanos", "signal_id"], kind="mergesort")
     )
+
+
+def _causal_reference(values: np.ndarray, reference_epochs: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return causal delta, robust z score, and readiness for one signal.
+
+    The reference at an epoch is calculated only from earlier finite values.
+    Once ``reference_epochs`` observations are accumulated, the initial
+    reference is frozen so a sustained attack is not absorbed into the normal
+    level.  The zero values before readiness are explicitly identified by the
+    separate readiness feature.
+    """
+    delta = np.zeros(len(values), dtype=np.float64)
+    z_score = np.zeros(len(values), dtype=np.float64)
+    ready = np.zeros(len(values), dtype=np.float64)
+    history: list[float] = []
+    center: float | None = None
+    scale: float | None = None
+    for index, value in enumerate(values):
+        if center is not None and np.isfinite(value):
+            delta[index] = value - center
+            z_score[index] = delta[index] / scale  # type: ignore[operator]
+            ready[index] = 1.0
+        if np.isfinite(value) and len(history) < reference_epochs:
+            history.append(float(value))
+            if len(history) == reference_epochs:
+                reference = np.asarray(history, dtype=np.float64)
+                center = float(np.median(reference))
+                mad = float(np.median(np.abs(reference - center)))
+                scale = max(1.4826 * mad, 1e-3)
+    return delta, z_score, ready
+
+
+def _add_causal_reference_features(source: pd.DataFrame, reference_epochs: int) -> pd.DataFrame:
+    if reference_epochs <= 0:
+        return source
+    result = source.copy()
+    for feature in ("Cn0DbHz", "AgcDb"):
+        result[f"{feature}CausalReferenceDelta"] = 0.0
+        result[f"{feature}CausalReferenceZ"] = 0.0
+    result["CausalReferenceReady"] = 0.0
+    for _identity, index in result.groupby("signal_id", sort=False).groups.items():
+        rows = result.loc[index].sort_values("TimeNanos", kind="mergesort")
+        cn0_delta, cn0_z, cn0_ready = _causal_reference(rows["Cn0DbHz"].to_numpy(dtype=np.float64), reference_epochs)
+        agc_delta, agc_z, _agc_ready = _causal_reference(rows["AgcDb"].to_numpy(dtype=np.float64), reference_epochs)
+        result.loc[rows.index, "Cn0DbHzCausalReferenceDelta"] = cn0_delta
+        result.loc[rows.index, "Cn0DbHzCausalReferenceZ"] = cn0_z
+        result.loc[rows.index, "AgcDbCausalReferenceDelta"] = agc_delta
+        result.loc[rows.index, "AgcDbCausalReferenceZ"] = agc_z
+        result.loc[rows.index, "CausalReferenceReady"] = cn0_ready
+    return result
 
 
 def _apply_agc_common_mode(source: pd.DataFrame, mode: str) -> pd.DataFrame:
@@ -644,12 +706,13 @@ def build_fold(
     time_steps: int,
     block_size: int,
     agc_common_mode: str = "none",
+    causal_reference_epochs: int = 0,
 ) -> dict[str, dict[str, int]]:
-    configure(time_steps)
+    configure(time_steps, causal_reference_epochs)
     output_dir.mkdir(parents=True, exist_ok=True)
     raw_required = [
         *KEYS, "DeviceName", SOURCE_COL, "TimeNanos", "TOW", "utcTimeMillis", "signal_id",
-        "Label", "LabelStatus", *RAW_FEATURES,
+        "Label", "LabelStatus", *SOURCE_RAW_FEATURES,
     ]
     LOG.info("Reading %s", csv)
     df = pd.read_csv(csv, usecols=lambda c: c in set(raw_required))
@@ -660,7 +723,7 @@ def build_fold(
     for key in KEYS + ["DeviceName", SOURCE_COL, "signal_id"]:
         df[key] = df[key].astype(str)
     df["Label"] = (pd.to_numeric(df["Label"], errors="coerce").fillna(0) > 0).astype(np.int8)
-    for feature in RAW_FEATURES + ["TimeNanos", "TOW", "utcTimeMillis"]:
+    for feature in SOURCE_RAW_FEATURES + ["TimeNanos", "TOW", "utcTimeMillis"]:
         df[feature] = pd.to_numeric(df[feature], errors="coerce")
     df = df.dropna(subset=[*KEYS, SOURCE_COL, "DeviceName", "TimeNanos", "utcTimeMillis", "signal_id"])
     outer = _load_outer_manifest(outer_manifest_path)
@@ -717,6 +780,7 @@ def build_fold(
         key_tuple = tuple(str(source_key[i]) for i in range(3))
         device_name = str(source_key[3]); outer_role = str(source_key[5])
         source = _apply_agc_common_mode(_aggregate_source(source_rows), agc_common_mode)
+        source = _add_causal_reference_features(source, causal_reference_epochs)
         source_times = np.sort(source["TimeNanos"].unique().astype(np.int64))
         source_epoch = epoch_table[
             (epoch_table[KEYS] == np.asarray(key_tuple)).all(axis=1)
@@ -795,6 +859,11 @@ def build_fold(
         "block_size_canonical_epochs": block_size, "guard_epochs": GUARD_EPOCHS,
         "windows_cross_split_boundary": False, "stats_history_crosses_boundary": False,
         "agc_common_mode": agc_common_mode,
+        "causal_reference_epochs": causal_reference_epochs,
+        "causal_reference_semantics": (
+            "per-source, per-signal causal initial-reference delta/z features"
+            if causal_reference_epochs else "disabled"
+        ),
         "agc_feature_interpretation": (
             "AgcDb - median(AgcDb | same source, TimeNanos, FreqBand)"
             if agc_common_mode == "same_time_band_median" else "raw AgcDb"
@@ -820,14 +889,20 @@ def main() -> None:
         "--agc-common-mode", choices=("none", "same_time_band_median"), default="none",
         help="transform AGC before raw windows and AGC statistic construction",
     )
+    parser.add_argument(
+        "--causal-reference-epochs", type=int, default=0,
+        help="initial prior observations per source/signal used for frozen causal C/N0 and AGC references; 0 disables",
+    )
     args = parser.parse_args()
     if args.time_steps < 2:
         parser.error("--time-steps must be at least 2")
     if args.block_size < args.time_steps:
         parser.error("--block-size must be at least --time-steps")
+    if args.causal_reference_epochs < 0:
+        parser.error("--causal-reference-epochs must be non-negative")
     summary = build_fold(
         args.csv, args.outer_manifest, args.output_dir, args.block_manifest,
-        args.time_steps, args.block_size, args.agc_common_mode,
+        args.time_steps, args.block_size, args.agc_common_mode, args.causal_reference_epochs,
     )
     print(json.dumps(summary, indent=2))
 

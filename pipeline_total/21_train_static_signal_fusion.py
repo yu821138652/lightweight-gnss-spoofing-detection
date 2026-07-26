@@ -57,6 +57,15 @@ RAW_FEATURE_SETS: dict[str, tuple[str, ...]] = {
     "no_agc_cn0": tuple(
         name for name in RAW_FEATURE_NAMES if name not in {"AgcDb", "Cn0DbHz"}
     ),
+    # E8: preserve the historical five-feature baseline and append only
+    # online causal reference features emitted by the static tensor builder.
+    "causal_reference": tuple(RAW_FEATURE_NAMES) + (
+        "Cn0DbHzCausalReferenceDelta",
+        "Cn0DbHzCausalReferenceZ",
+        "AgcDbCausalReferenceDelta",
+        "AgcDbCausalReferenceZ",
+        "CausalReferenceReady",
+    ),
 }
 STATS_FEATURE_SETS = (
     "full",
@@ -71,7 +80,7 @@ STATS_FEATURE_SETS = (
     "no_agc_stats",
 )
 REQUIRED_ARRAYS = {"x", "mask", "y", "is_dynamic", "device_id"}
-ENCODERS = ("lstm", "gru", "tcn")
+ENCODERS = ("lstm", "gru", "tcn", "timesnet", "timesnet_full")
 
 
 def seed_all(seed: int) -> None:
@@ -236,6 +245,13 @@ class FusionDataset(Dataset):
             for key in ("mask", "y", "is_dynamic", "device_id"):
                 if not np.array_equal(raw[key], stats[key]):
                     raise ValueError(f"Raw/stats {key} mismatch for {raw_path.name}")
+            recording_id = None
+            if "recording_id" in raw.files:
+                recording_id = np.asarray(raw["recording_id"])
+                if recording_id.shape != raw_x.shape[:1]:
+                    raise ValueError(
+                        f"recording_id must have shape [B]={raw_x.shape[:1]}, got {recording_id.shape}"
+                    )
             mask = np.asarray(raw["mask"])
             labels = np.asarray(raw["y"])
             if mask.shape != raw_x.shape[:2] or labels.shape != raw_x.shape[:2]:
@@ -251,6 +267,9 @@ class FusionDataset(Dataset):
             self.stats = torch.from_numpy(stats_x[..., stats_feature_indices].copy()).float()
             self.mask = torch.from_numpy(mask.copy()).bool()
             self.y = torch.from_numpy(labels.copy()).long()
+            self.recording_id = (
+                torch.from_numpy(recording_id.copy()).long() if recording_id is not None else None
+            )
 
     def __len__(self) -> int:
         return len(self.y)

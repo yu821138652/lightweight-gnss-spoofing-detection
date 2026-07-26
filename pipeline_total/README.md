@@ -1,4 +1,4 @@
-# pipeline_total 脚本索引
+﻿# pipeline_total 脚本索引
 
 当前状态以 `docs/handoff_status.md` 为准。本目录分为三段：01–10 是既有数据与基础实验链；11–18 是 P0–P5 历史设备级探索；19–21、23 是最近的静态逐 signal 实验入口。22 是当前推荐的 Session 级标签审查工具。
 
@@ -212,6 +212,386 @@ python pipeline_total/23_evaluate_static_fusion_groups.py `
   --output-dir output/training/static_timeblock_outer_v2_compact11_repro_v1/fold_6/tcn `
   --batch-size 256
 ```
+
+### 25_train_static_band_experts.py
+
+`25_train_static_band_experts.py` 是针对 L5-only 难例的**独立探索实验**。它不改变标签、窗口、outer-session / inner-time-block 划分或 compact11 特征，而是使用 stats 张量中未缩放、在线可得的 `IsL5` sidecar 将每条卫星信号路由到独立的 L1 或 L5 `TCN + stats MLP` 专家。专家内部不再输入常量 `FreqBand`；它不是场景、攻击类型或标签的代理，不能据此预知攻击频段。
+
+先以 fold 6 验证结构本身。不要覆盖 `static_timeblock_outer_v2_explore_compact11_tcn16_d10/` 的保留基线：
+
+```powershell
+python pipeline_total/25_train_static_band_experts.py `
+  --data-dir output/tensors/static_timeblock_outer_v2/fold_6 `
+  --output-dir output/training/static_timeblock_outer_v2_band_experts_v1/fold_6/tcn `
+  --encoder tcn `
+  --hidden-dim 16 `
+  --dropout 0.1 `
+  --lr 0.001 `
+  --weight-decay 0.001 `
+  --raw-feature-set full `
+  --stats-feature-set cn0_agc_coverage_rx_time_std `
+  --epochs 30 `
+  --batch-size 256 `
+  --patience 6 `
+  --seed 2026 `
+  --num-workers 0
+```
+
+训练只读取 train/val。锁定 checkpoint 后才运行测试；测试会同时输出总体、L1/L5 和 device x band 指标：
+
+```powershell
+python pipeline_total/25_train_static_band_experts.py `
+  --data-dir output/tensors/static_timeblock_outer_v2/fold_6 `
+  --output-dir output/training/static_timeblock_outer_v2_band_experts_v1/fold_6/tcn `
+  --encoder tcn `
+  --raw-feature-set full `
+  --stats-feature-set cn0_agc_coverage_rx_time_std `
+  --batch-size 256 `
+  --num-workers 0 `
+  --test-only
+```
+
+### 26_train_static_conditional_heads.py (E1)
+
+E1 保留当前正式的 `target-band-only` 标签和 compact11 输入，但使用一个共享 raw+stats 编码器与两个由未缩放 `IsL5` 选择的 L1/L5 分类头。训练时以单个有效卫星窗口为采样单位，每个 batch 严格包含相同数量的 `L1-`、`L1+`、`L5-`、`L5+`。这与 25 的两个独立专家不同；它只检验“共享表征 + 频段条件化头 + frequency x class 均衡”这一单独假设。
+
+先在 fold 6 执行，使用独立输出目录：
+
+```powershell
+python pipeline_total/26_train_static_conditional_heads.py `
+  --data-dir output/tensors/static_timeblock_outer_v2/fold_6 `
+  --output-dir output/training/static_timeblock_outer_v2_e1_conditional_heads_v2/fold_6/tcn `
+  --encoder tcn `
+  --hidden-dim 16 `
+  --dropout 0.1 `
+  --lr 0.001 `
+  --weight-decay 0.001 `
+  --raw-feature-set full `
+  --stats-feature-set cn0_agc_coverage_rx_time_std `
+  --epochs 30 `
+  --batch-size 8192 `
+  --eval-batch-size 256 `
+  --steps-per-epoch 128 `
+  --patience 6 `
+  --seed 2026 `
+  --num-workers 0
+```
+
+锁定 checkpoint 后再测试：
+
+```powershell
+python pipeline_total/26_train_static_conditional_heads.py `
+  --data-dir output/tensors/static_timeblock_outer_v2/fold_6 `
+  --output-dir output/training/static_timeblock_outer_v2_e1_conditional_heads_v2/fold_6/tcn `
+  --encoder tcn `
+  --raw-feature-set full `
+  --stats-feature-set cn0_agc_coverage_rx_time_std `
+  --eval-batch-size 256 `
+  --num-workers 0 `
+  --test-only
+```
+
+### 27_train_static_auxiliary_state.py (E3)
+
+E3 keeps the formal binary target-band spoofing label as the only deployable
+output and the only primary metric.  It adds a training-only three-class head:
+`normal`, `target_spoofed`, and `non_target_single_band_attack`.  The third
+state is derived from the reviewed `st_L1`/`st_L5` TOW intervals in
+`configs/preprocessing.yml`, using the endpoint TOW and recording trace stored
+in the existing tensors.  It is an auxiliary operational context label, not a
+claim that a non-target signal is spoofed.  E3 therefore differs from the E4
+label-sensitivity control: it never changes the original `y` labels and needs
+no CSV or tensor rebuild.
+
+Start with the fixed fold-6 diagnostic and retain the same W5, compact11,
+TCN16, train/validation protocol as the current baseline.  The checkpoint is
+selected only by the original binary validation Macro-F1; auxiliary metrics
+are reported separately.
+
+```powershell
+python pipeline_total/27_train_static_auxiliary_state.py `
+  --data-dir output/tensors/static_timeblock_outer_v2/fold_6 `
+  --output-dir output/training/static_timeblock_outer_v2_e3_auxiliary_state_v1/fold_6/tcn `
+  --label-config configs/preprocessing.yml `
+  --encoder tcn `
+  --hidden-dim 16 `
+  --dropout 0.1 `
+  --lr 0.001 `
+  --weight-decay 0.001 `
+  --raw-feature-set full `
+  --stats-feature-set cn0_agc_coverage_rx_time_std `
+  --aux-loss-weight 0.25 `
+  --epochs 30 `
+  --batch-size 256 `
+  --patience 6 `
+  --seed 2026 `
+  --num-workers 0
+```
+
+After the validation-selected checkpoint is locked, evaluate the original
+binary detector and the auxiliary state report on fold 6:
+
+```powershell
+python pipeline_total/27_train_static_auxiliary_state.py `
+  --data-dir output/tensors/static_timeblock_outer_v2/fold_6 `
+  --output-dir output/training/static_timeblock_outer_v2_e3_auxiliary_state_v1/fold_6/tcn `
+  --label-config configs/preprocessing.yml `
+  --encoder tcn `
+  --raw-feature-set full `
+  --stats-feature-set cn0_agc_coverage_rx_time_std `
+  --batch-size 256 `
+  --num-workers 0 `
+  --test-only
+```
+
+### 28_train_static_cross_band_context.py (E5a)
+
+E5a keeps the formal binary target-band spoofing task unchanged and introduces
+no interval-derived training target.  It conditions every signal prediction
+on causal, same-device/source endpoint context: L1/L5 visible counts, C/N0 and
+AGC means, and their changes from the preceding W5 history.  Context is
+computed from the current tensor batch only; it never uses labels, TOW,
+scenario, or future observations.  The initial diagnostic is fold 6, with
+the same compact11 TCN16 configuration as E0.
+
+```powershell
+python pipeline_total/28_train_static_cross_band_context.py `
+  --data-dir output/tensors/static_timeblock_outer_v2/fold_6 `
+  --output-dir output/training/static_timeblock_outer_v2_e5a_cross_band_context_v1/fold_6/tcn `
+  --encoder tcn `
+  --hidden-dim 16 `
+  --dropout 0.1 `
+  --lr 0.001 `
+  --weight-decay 0.001 `
+  --raw-feature-set full `
+  --stats-feature-set cn0_agc_coverage_rx_time_std `
+  --epochs 30 `
+  --batch-size 256 `
+  --patience 6 `
+  --seed 2026 `
+  --num-workers 0
+```
+
+After checkpoint selection, test writes both the primary binary metrics and
+`test_metrics_by_device_band.csv` for the fold-6 Huawei-L1 and L5 diagnostics.
+
+```powershell
+python pipeline_total/28_train_static_cross_band_context.py `
+  --data-dir output/tensors/static_timeblock_outer_v2/fold_6 `
+  --output-dir output/training/static_timeblock_outer_v2_e5a_cross_band_context_v1/fold_6/tcn `
+  --encoder tcn `
+  --raw-feature-set full `
+  --stats-feature-set cn0_agc_coverage_rx_time_std `
+  --batch-size 256 `
+  --num-workers 0 `
+  --test-only
+```
+
+### 29_train_static_context_attack_aux.py (E5b)
+
+E5b extends E5a's causal same-endpoint L1/L5 context with a second,
+training-only `attack_associated` head.  The primary output and all selection
+metrics remain the unchanged formal target-band-only binary label.  The
+auxiliary target is 1 for every active signal in a reviewed static attack TOW
+interval from `configs/preprocessing.yml`, and 0 outside it.  It is never used
+as an input feature or deployment output.  The initial auxiliary loss weight
+is deliberately small (`0.05`) because E3 showed that a stronger interval
+supervision can overwhelm the primary signal task.
+
+```powershell
+python pipeline_total/29_train_static_context_attack_aux.py `
+  --data-dir output/tensors/static_timeblock_outer_v2/fold_6 `
+  --output-dir output/training/static_timeblock_outer_v2_e5b_context_attack_aux_v1/fold_6/tcn `
+  --label-config configs/preprocessing.yml `
+  --encoder tcn `
+  --hidden-dim 16 `
+  --dropout 0.1 `
+  --lr 0.001 `
+  --weight-decay 0.001 `
+  --raw-feature-set full `
+  --stats-feature-set cn0_agc_coverage_rx_time_std `
+  --aux-loss-weight 0.05 `
+  --epochs 30 `
+  --batch-size 256 `
+  --patience 6 `
+  --seed 2026 `
+  --num-workers 0
+```
+
+After checkpoint selection, E5b writes formal primary metrics, the auxiliary
+attack-associated metrics, and the usual device-by-band primary CSV:
+
+```powershell
+python pipeline_total/29_train_static_context_attack_aux.py `
+  --data-dir output/tensors/static_timeblock_outer_v2/fold_6 `
+  --output-dir output/training/static_timeblock_outer_v2_e5b_context_attack_aux_v1/fold_6/tcn `
+  --label-config configs/preprocessing.yml `
+  --encoder tcn `
+  --raw-feature-set full `
+  --stats-feature-set cn0_agc_coverage_rx_time_std `
+  --batch-size 256 `
+  --num-workers 0 `
+  --test-only
+```
+
+### 30_train_static_attack_associated.py (E6)
+
+E6 is a separate direct task, not an improvement claim over the formal
+target-band detector.  Every active signal inside a reviewed static attack TOW
+interval becomes positive, independent of its frequency band; every active
+signal outside is negative.  The target is derived from the tensor endpoint
+trace plus `configs/preprocessing.yml` at load time, leaving the central CSV
+and formal tensor `y` unchanged.  Its metrics must be reported as
+`attack-associated anomaly detection`, separately from E0/E1/E2/E3/E5.
+
+```powershell
+python pipeline_total/30_train_static_attack_associated.py `
+  --data-dir output/tensors/static_timeblock_outer_v2/fold_6 `
+  --output-dir output/training/static_timeblock_outer_v2_e6_attack_associated_v1/fold_6/tcn `
+  --label-config configs/preprocessing.yml `
+  --encoder tcn `
+  --hidden-dim 16 `
+  --dropout 0.1 `
+  --lr 0.001 `
+  --weight-decay 0.001 `
+  --raw-feature-set full `
+  --stats-feature-set cn0_agc_coverage_rx_time_std `
+  --epochs 30 `
+  --batch-size 256 `
+  --patience 6 `
+  --seed 2026 `
+  --num-workers 0
+```
+
+### 31_train_static_direct_state.py (E7)
+
+E7 makes the three-way state the primary prediction: `normal`, formal
+`target_spoofed`, and `non_target_single_band_attack`.  The latter is only an
+attack-associated context label for an active non-target-band signal within a
+reviewed single-band attack interval; it does not claim that signal is
+spoofed.  The report includes both direct three-class metrics and two clearly
+marked binary projections, including the original E0 formal target-band
+endpoint definition.  It is a separate task and must not be described as an
+E0 improvement without comparing that projection.
+
+```powershell
+python pipeline_total/31_train_static_direct_state.py `
+  --data-dir output/tensors/static_timeblock_outer_v2/fold_6 `
+  --output-dir output/training/static_timeblock_outer_v2_e7_direct_state_v1/fold_6/tcn `
+  --label-config configs/preprocessing.yml `
+  --encoder tcn `
+  --hidden-dim 16 `
+  --dropout 0.1 `
+  --lr 0.001 `
+  --weight-decay 0.001 `
+  --raw-feature-set full `
+  --stats-feature-set cn0_agc_coverage_rx_time_std `
+  --epochs 30 `
+  --batch-size 256 `
+  --patience 6 `
+  --seed 2026 `
+  --num-workers 0
+```
+
+### 32_generate_static_inner_session_manifests.py
+
+The current time-block validation is not representative of a complete unseen
+Session.  This generator turns one fixed outer-test fold into leave-one-
+development-Session-out inner folds.  Each generated block manifest assigns a
+whole development Session to validation and every other development Session to
+training; it removes the old within-Session validation split and its guard
+gaps.  The outer test Session stays excluded from both inner train and val.
+
+```powershell
+python pipeline_total/32_generate_static_inner_session_manifests.py `
+  --outer-manifest output/tensors/static_timeblock_outer_v2/fold_6/outer_recording_manifest.csv `
+  --block-manifest output/tensors/static_timeblock_outer_v2/fold_6/block_manifest.csv `
+  --output-dir output/protocols/static_inner_session_outer_v1/fold_6
+```
+
+Add `--write-refit-all-development` when a final outer-development refit is
+needed after all model choices are locked.  It writes
+`refit_all_development/block_manifest.csv`, assigning every development epoch
+to train while retaining the complete outer test Session.
+
+### E8: Causal Session Reference Features
+
+`20_build_static_timeblock_tensors.py` can add per-source, per-signal C/N0
+and AGC reference features with `--causal-reference-epochs`.  At each epoch,
+the reference uses only preceding finite observations.  After the requested
+number of observations, its median and MAD scale are frozen, preventing a
+sustained attack from being treated as the new normal.  A `CausalReferenceReady`
+feature distinguishes the initial uncalibrated period.  The option is disabled
+by default and does not change historical tensor contracts.
+
+Fold 6 has approximately 590 seconds before the reviewed L5 attack begins,
+so use 120 source/signal epochs as the initial online calibration window:
+
+```powershell
+python pipeline_total/20_build_static_timeblock_tensors.py `
+  --csv output/processed_gnss_data.csv `
+  --outer-manifest output/tensors/static_timeblock_outer_v2/fold_6/outer_recording_manifest.csv `
+  --block-manifest output/tensors/static_timeblock_outer_v2/fold_6/block_manifest.csv `
+  --output-dir output/tensors/static_timeblock_outer_v2_e8_causalref120/fold_6 `
+  --time-steps 5 `
+  --causal-reference-epochs 120
+```
+
+Train with the historical E0 TCN hyperparameters and the dedicated
+`causal_reference` raw profile.  This is the direct E8 comparison: five E0
+raw features plus five causal-reference features, with unchanged labels and
+stats branch.
+
+```powershell
+python pipeline_total/21_train_static_signal_fusion.py `
+  --data-dir output/tensors/static_timeblock_outer_v2_e8_causalref120/fold_6 `
+  --output-dir output/training/static_timeblock_outer_v2_e8_causalref120/fold_6/tcn `
+  --encoder tcn `
+  --hidden-dim 16 `
+  --dropout 0.3 `
+  --lr 0.001 `
+  --weight-decay 0.001 `
+  --raw-feature-set causal_reference `
+  --stats-feature-set full `
+  --epochs 30 `
+  --batch-size 256 `
+  --patience 6 `
+  --seed 2026 `
+  --num-workers 0
+```
+
+### 33_refit_static_signal_fusion.py (E9a / E9b)
+
+E9a is a fixed-epoch final refit, not a validation experiment.  It trains on
+all outer-development Sessions and never reads the outer test tensor.  Use it
+only with an epoch count chosen before the refit.  The resulting checkpoint is
+compatible with `21_train_static_signal_fusion.py --test-only --checkpoint`.
+
+E9b keeps the same refit model, labels, and number of sampled windows per
+epoch, but adds `--sampling session_uniform`.  It draws each window with an
+inverse-session-size probability, so every development Session has roughly
+equal expected representation in an epoch.  This is intended to test whether a
+short L5 attack Session is being drowned out by longer Sessions; it is not a
+change to the formal target-band label definition.
+
+```powershell
+python pipeline_total/33_refit_static_signal_fusion.py `
+  --data-dir output/tensors/static_timeblock_outer_v2_e9a_refit_all_dev/fold_6 `
+  --output-dir output/training/static_timeblock_outer_v2_e9b_session_uniform/fold_6/tcn `
+  --encoder tcn `
+  --epochs 10 `
+  --hidden-dim 16 `
+  --dropout 0.3 `
+  --lr 0.001 `
+  --weight-decay 0.001 `
+  --raw-feature-set full `
+  --stats-feature-set full `
+  --sampling session_uniform `
+  --batch-size 256 `
+  --seed 2026 `
+  --num-workers 0
+```
+
 
 ## 生成物策略
 
