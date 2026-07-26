@@ -24,6 +24,82 @@
 
 当前证据支持以下问题描述，而非“某个模型已经优于其他模型”：在已审核的静态目标频段标签下，跨 Session 的绝对 C/N0/AGC 及其短历史统计会随设备和环境变化。模型对 Mate40 偏向过报、对 RedMi K60 和 Pixel 6 偏向漏报。已有频段路由、辅助任务、跨频段上下文、全开发集 refit、Session 均匀采样、L5-only 专家和设备条件头均未在同一 Fold 6 上同时获得高 Recall 与低 FAR。
 
+### 本轮补充：跨频段耦合与分层事件检测（2026-07-27）
+
+#### 现象、假设与论文价值
+
+- 新发现不是简单的“L5 样本少”，而是同一设备的 L1/L5 观测可能并非独立：L5 受到欺骗时，L5 C/N0 常向上；未被直接欺骗的 L1 可能同时出现向下的压制/干扰响应。
+- 一个待文献和原始曲线进一步验证的芯片实现假设是：部分接收机先捕获 L5，再利用该结果辅助或引导 L1 搜索/跟踪；L5 欺骗的突增因而可能改变 L1 的接收机行为。该假设可解释“L5 上升、L1 下降”的联合模式，但当前不能将它表述为已证实的因果机制。
+- 该现象具有论文价值：不同手机芯片对跨频段耦合的响应不同，不能把所有非目标频段的变化直接并入“直接欺骗”标签。论文应报告这一罕见的设备异质性现象，并以相关文献和逐设备原始曲线补强解释。
+
+#### 标签与决策层级
+
+应明确区分两类输出，不能互相替代：
+
+| 层级 | 预测问题 | 正类语义 | 对 L5 攻击期间 L1 下降的处理 |
+|---|---|---|---|
+| 卫星/`signal_id` 级 | 该信号是否被直接欺骗 | 保持当前 target-band-only 标签 | L1 是攻击关联异常，不自动记为 L1 直接欺骗 |
+| 设备事件级 | 设备此刻是否处于攻击/异常事件 | 由人工审核的 Session 攻击 TOW 区间定义，与频段无关 | 可作为设备处于攻击事件的证据 |
+
+因此，后续系统可同时输出“设备攻击事件”和“卫星直接欺骗/攻击关联异常”。设备级正类不能反向改写卫星级直接欺骗标签。
+
+#### 为什么现有 L5 逐卫星模型会失败
+
+- L1 欺骗场景中，受攻击的 L1 卫星数量多且 C/N0 普遍上升，因此模型较容易学习到主导模式。
+- L5 欺骗场景中，真正上升的 L5 数量较少；更多的 L1 endpoint 则表现为下降/压制。若用目标频段直接欺骗标签训练，模型会同时面对少量“上升正类”和大量跨设备、跨 Session 的抑制型负类。
+- 绝对 C/N0、AGC 及短历史统计还会携带设备与环境差异。已有 Fold 6 诊断显示 Mate40 倾向误报，RedMi K60 与 Pixel 6 倾向漏报，错误方向相反，说明不能靠一个全局阈值解决。
+
+#### 已实现的两条诊断路线
+
+1. **设备攻击事件基线**
+   - 脚本：[36_build_device_attack_event_tensors.py](../pipeline_total/36_build_device_attack_event_tensors.py)、[37_train_device_attack_event.py](../pipeline_total/37_train_device_attack_event.py)。
+   - 以同一 `device x endpoint time` 为一个样本，聚合 L1/L5 的 C/N0、AGC、接收机时间不确定度、可观测率，并显式加入 L5-L1 差值及“L5 上升 + L1 下降”耦合特征。
+   - 事件标签来自审核后的 Session 区间，和目标频段无关。训练器将外层测试隔离为显式 `--test-only`，避免训练/早停阶段读取它。
+   - 实验说明：[hierarchical_attack_event_experiment.md](hierarchical_attack_event_experiment.md)。
+
+2. **E12a：动态 L5/L1+L5 增广静态 L5 专家**
+   - 脚本：[36_build_static_dynamic_l5_augmentation_tensors.py](../pipeline_total/36_build_static_dynamic_l5_augmentation_tensors.py)、[37_train_static_dynamic_l5_augmentation.py](../pipeline_total/37_train_static_dynamic_l5_augmentation.py)。
+   - 动态 `dy_L5`、`dy_L_15` Session 仅加入训练集，静态 Fold 6 外层测试保持为操场长 `st_L5`，不能混合后宣称为同一基准。
+   - 每个动态窗口通过 `is_dynamic` 写入张量，确保其来源可审计；模型选择应只使用完整静态 development Session 的内层验证。
+   - 协议和清单：[static_dynamic_l5_augment_v1/fold_6/README.md](protocols/static_dynamic_l5_augment_v1/fold_6/README.md)。
+
+#### 设备事件基线：已完成的 Fold 6 诊断
+
+本轮从 `output/tensors/static_timeblock_outer_v2/fold_6` 构建了设备事件张量；产物位于被 Git 忽略的 `output/tensors/hierarchical_event_v1/fold_6/device_tensors`。样本数如下：
+
+| 划分 | 设备时间窗 | 正类 | 负类 |
+|---|---:|---:|---:|
+| train | 32,682 | 11,249 | 21,433 |
+| val | 10,085 | 3,145 | 6,940 |
+| outer test | 8,181 | 3,886 | 4,295 |
+
+线性基线在 train/val 选择后得到 `val Macro-F1=0.9673`，但固定 checkpoint 的 outer test 为：
+
+| 指标 | outer test |
+|---|---:|
+| Macro-F1 | 0.7461 |
+| Precision | 0.9804 |
+| Recall | 0.5162 |
+| FAR | 0.93% |
+
+逐设备 Recall 为 Pixel 6 `54.23%`、Pixel Watch 1 `40.13%`、Pixel Watch 2 `83.09%`、Mate40 `52.89%`、RedMi K60 `6.03%`、MI8 `96.91%`。Mate40 FAR 为 `4.82%`，其余设备接近 0。这再次证明单一 validation Session 的高分不能用于模型选择结论：模型总体上很保守，误报低但对 RedMi K60 等设备严重漏保。
+
+该 Fold 6 test 已反复参与诊断，因此这些数字是迭代式开发诊断，不是新的独立盲测，也不能据此继续手调阈值后再报告为 test 性能。
+
+#### 下一位同学的优先事项
+
+1. 检索并阅读“GNSS 双频捕获/跟踪、辅助捕获、跨频段干扰或共享接收机资源”相关论文；把支持或反驳上述耦合假设的证据记录到论文素材中。
+2. 从开发集实施留一完整静态 Session 的多折设备事件评估。选模型时同时报告各折中位数 Macro-F1、最差设备 Recall 和 Mate40 FAR；outer test 不参与参数、特征或阈值选择。
+3. 重点检查 RedMi K60 在 L5 事件中的原始 L1/L5 曲线、活跃卫星数、缺失率和事件标签对齐，判断其 `6.03%` 设备事件召回是特征失配、设备窗口聚合失真，还是原始观测/标签问题。
+4. 完成 E12a 的内层静态 Session 选择和固定 epoch refit，再以一次显式 `--test-only` 做诊断。不要把动态增广后的结果与纯静态 7-fold 基线直接排序。
+5. 若设备级模型继续保守，优先评估设备条件化或校准方案；但必须同时保留卫星级“直接欺骗”和“攻击关联异常”的语义边界。
+
+#### 本轮 Git 提交
+
+- `da6a08a 修复(静态张量): 补全可选特征与标签接口`
+- `989b2ba 新增(静态检测): 加入静态动态 L5 增广实验`
+- `bb83338 新增(分层检测): 加入设备攻击事件基线`
+- `67351eb 修复(分层检测): 固定默认标签配置路径`
 ## 1. 一句话结论
 
 项目目前仍处于“数据与评估协议收敛”阶段，尚未确定最终模型。当前静态逐 `signal_id` 的保留基线是 `compact11 + TCN16 + dropout=0.1`；它在完整 7-fold 的 pooled Macro-F1 为 0.8639，但 Session 等权均值仅为 `0.8502 ± 0.0933`，操场长 L5 仍只有 0.6761。跨 Session、设备和场景的波动仍很大；动态场景以及操场 L5/L15 的主要瓶颈更像是标签可信度、设备观测差异和特征域偏移，而不是模型容量不足。
