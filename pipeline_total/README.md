@@ -1,4 +1,4 @@
-﻿# pipeline_total 脚本索引
+﻿﻿﻿# pipeline_total 脚本索引
 
 当前状态以 `docs/handoff_status.md` 为准。本目录分为三段：01–10 是既有数据与基础实验链；11–18 是 P0–P5 历史设备级探索；19–21、23 是最近的静态逐 signal 实验入口。22 是当前推荐的 Session 级标签审查工具。
 
@@ -592,6 +592,62 @@ python pipeline_total/33_refit_static_signal_fusion.py `
   --num-workers 0
 ```
 
+
+### 34_refit_static_l5_expert.py (E10)
+
+E10 is an L5-only diagnostic expert.  Its loss uses only active L5 endpoints;
+during test its L5 predictions are retained and every non-L5 endpoint is forced
+to normal.  It therefore evaluates whether L1 suppression observations harm
+L5 target-spoof detection, but cannot replace a universal L1/L5 detector.
+Like E9a, it refits on all outer-development Sessions without reading the
+outer test during training.
+
+```powershell
+python pipeline_total/34_refit_static_l5_expert.py `
+  --data-dir output/tensors/static_timeblock_outer_v2_e9a_refit_all_dev/fold_6 `
+  --output-dir output/training/static_timeblock_outer_v2_e10_l5_expert/fold_6/tcn `
+  --encoder tcn `
+  --epochs 10 `
+  --hidden-dim 16 `
+  --dropout 0.3 `
+  --lr 0.001 `
+  --weight-decay 0.001 `
+  --raw-feature-set full `
+  --stats-feature-set full `
+  --batch-size 256 `
+  --seed 2026 `
+  --num-workers 0
+```
+
+Test only after the checkpoint is locked.  The output JSON includes formal
+overall metrics, L5-only metrics, and an L5 breakdown by device.
+
+### 35_refit_static_l5_device_heads.py (E11)
+
+E11 is an L5-only diagnostic with a shared raw/stats encoder and a small
+receiver-device classification head for every device seen in development.  The
+receiver device is an online-known routing attribute, not a label-derived
+feature.  L5 losses are class-weighted within each device and averaged across
+devices, while a shared fallback head is trained for an unseen device.  Like
+E10, test forces non-L5 endpoints to normal and is not a universal detector.
+
+```powershell
+python pipeline_total/35_refit_static_l5_device_heads.py `
+  --data-dir output/tensors/static_timeblock_outer_v2_e9a_refit_all_dev/fold_6 `
+  --output-dir output/training/static_timeblock_outer_v2_e11_l5_device_heads/fold_6/tcn `
+  --encoder tcn `
+  --epochs 10 `
+  --hidden-dim 16 `
+  --dropout 0.3 `
+  --lr 0.001 `
+  --weight-decay 0.001 `
+  --fallback-loss-weight 0.25 `
+  --raw-feature-set full `
+  --stats-feature-set full `
+  --batch-size 256 `
+  --seed 2026 `
+  --num-workers 0
+```
 
 ## 生成物策略
 

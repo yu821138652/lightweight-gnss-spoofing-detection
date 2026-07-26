@@ -265,8 +265,16 @@ class FusionDataset(Dataset):
 
             self.raw = torch.from_numpy(raw_x[..., raw_feature_indices].copy()).float()
             self.stats = torch.from_numpy(stats_x[..., stats_feature_indices].copy()).float()
+            device_id = np.asarray(raw["device_id"])
+            if device_id.ndim == 1 and device_id.shape != raw_x.shape[:1]:
+                raise ValueError(f"device_id must have shape [B]={raw_x.shape[:1]}, got {device_id.shape}")
+            if device_id.ndim == 2 and device_id.shape != raw_x.shape[:2]:
+                raise ValueError(f"device_id must have shape [B,S]={raw_x.shape[:2]}, got {device_id.shape}")
+            if device_id.ndim not in {1, 2}:
+                raise ValueError(f"device_id must have shape [B] or [B,S], got {device_id.shape}")
             self.mask = torch.from_numpy(mask.copy()).bool()
             self.y = torch.from_numpy(labels.copy()).long()
+            self.device_id = torch.from_numpy(device_id.copy()).long()
             self.recording_id = (
                 torch.from_numpy(recording_id.copy()).long() if recording_id is not None else None
             )

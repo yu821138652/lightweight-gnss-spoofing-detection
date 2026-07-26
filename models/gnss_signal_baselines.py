@@ -457,6 +457,101 @@ class SignalRawStatsConditionalHeads(nn.Module):
         return logits.reshape(batch_size, signal_count, 2)
 
 
+class SignalRawStatsDeviceConditionalHeads(nn.Module):
+    """Shared fusion encoder with routing heads for known receiver devices."""
+
+    def __init__(
+        self,
+        raw_input_dim: int,
+        stats_input_dim: int,
+        device_ids: list[int],
+        encoder: str = "tcn",
+        hidden_dim: int = 32,
+        dropout: float = 0.1,
+    ):
+        super().__init__()
+        if not device_ids or len(set(device_ids)) != len(device_ids):
+            raise ValueError(f"device_ids must be a non-empty unique list, got {device_ids}")
+        self.raw_input_dim = raw_input_dim
+        self.stats_input_dim = stats_input_dim
+        self.encoder_name = encoder
+        self.device_ids = tuple(sorted(device_ids))
+        if encoder == "lstm":
+            self.raw_encoder = nn.LSTM(raw_input_dim, hidden_dim, batch_first=True)
+        elif encoder == "gru":
+            self.raw_encoder = nn.GRU(raw_input_dim, hidden_dim, batch_first=True)
+        elif encoder == "tcn":
+            self.raw_encoder = nn.Sequential(
+                CausalConv1d(raw_input_dim, hidden_dim, kernel_size=3),
+                nn.GELU(),
+                nn.Dropout(dropout),
+                CausalConv1d(hidden_dim, hidden_dim, kernel_size=3, dilation=2),
+                nn.GELU(),
+            )
+        elif encoder == "timesnet":
+            self.raw_encoder = MiniTimesNetEncoder(raw_input_dim, hidden_dim=hidden_dim, dropout=dropout)
+        elif encoder == "timesnet_full":
+            self.raw_encoder = FullTimesNetEncoder(raw_input_dim, hidden_dim=hidden_dim, dropout=dropout)
+        else:
+            raise ValueError(f"Unknown raw encoder: {encoder}")
+        self.stats_encoder = nn.Sequential(
+            nn.LayerNorm(stats_input_dim),
+            nn.Linear(stats_input_dim, hidden_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+        )
+        self.shared_fusion = nn.Sequential(
+            nn.LayerNorm(hidden_dim * 2),
+            nn.Linear(hidden_dim * 2, hidden_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+        )
+        self.fallback_head = nn.Linear(hidden_dim, 2)
+        self.device_heads = nn.ModuleDict({str(device_id): nn.Linear(hidden_dim, 2) for device_id in self.device_ids})
+
+    def _shared_embedding(self, raw_x: torch.Tensor, stats_x: torch.Tensor) -> tuple[torch.Tensor, int, int]:
+        batch_size, signal_count, _, raw_dim = raw_x.shape
+        if raw_dim != self.raw_input_dim or stats_x.shape[-1] != self.stats_input_dim or stats_x.shape[-2] != 1:
+            raise ValueError(f"Unexpected device-conditional fusion inputs: raw={tuple(raw_x.shape)} stats={tuple(stats_x.shape)}")
+        raw = raw_x.reshape(batch_size * signal_count, raw_x.shape[2], raw_dim)
+        if self.encoder_name == "lstm":
+            _, (hidden, _) = self.raw_encoder(raw)
+            raw_embedding = hidden[-1]
+        elif self.encoder_name == "gru":
+            _, hidden = self.raw_encoder(raw)
+            raw_embedding = hidden[-1]
+        elif self.encoder_name == "tcn":
+            raw_embedding = self.raw_encoder(raw.transpose(1, 2))[:, :, -1]
+        else:
+            raw_embedding = self.raw_encoder(raw)
+        stats = stats_x.reshape(batch_size * signal_count, self.stats_input_dim)
+        return self.shared_fusion(torch.cat([raw_embedding, self.stats_encoder(stats)], dim=-1)), batch_size, signal_count
+
+    def forward(
+        self,
+        raw_x: torch.Tensor,
+        stats_x: torch.Tensor,
+        device_id: torch.Tensor,
+        return_fallback: bool = False,
+    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+        shared, batch_size, signal_count = self._shared_embedding(raw_x, stats_x)
+        if device_id.ndim == 1 and tuple(device_id.shape) == (batch_size,):
+            device_grid = device_id[:, None].expand(batch_size, signal_count)
+        elif device_id.ndim == 2 and tuple(device_id.shape) == (batch_size, signal_count):
+            device_grid = device_id
+        else:
+            raise ValueError(f"device_id must be [B] or [B,S], got {tuple(device_id.shape)}")
+        fallback = self.fallback_head(shared)
+        routed = fallback.clone()
+        flat_device_id = device_grid.reshape(-1)
+        for known_device_id in self.device_ids:
+            selected = flat_device_id.eq(known_device_id)
+            if selected.any():
+                routed[selected] = self.device_heads[str(known_device_id)](shared[selected])
+        routed = routed.reshape(batch_size, signal_count, 2)
+        fallback = fallback.reshape(batch_size, signal_count, 2)
+        return (routed, fallback) if return_fallback else routed
+
 class SignalRawStatsAuxiliaryState(nn.Module):
     """Shared signal encoder with formal binary and auxiliary state heads.
 
