@@ -1,8 +1,8 @@
-# 项目交接状态（2026-07-24）
+# 项目交接状态（2026-07-26）
 
 本文是当前工作区的唯一状态入口。它说明已经确认的数据事实、最近的探索结论、结果边界、可复现入口和下一步建议。历史 P0–P5 结果只用于追溯，不代表当前已经锁定的主线。
 
-## 当前状态快照（2026-07-24 晚）
+## 当前状态快照（2026-07-26）
 
 > 本节是当前静态逐 `signal_id` 路线的权威结论；文中后续保留的
 > `static_timeblock_outer_v2`、10 维联合消融等内容是其形成过程中的
@@ -41,6 +41,19 @@
 | 6 | 操场 `st_L5/09.48–10.14` | **0.6761** | **55.86%** | **12.74%** |
 | 7 | 操场 `st_L_15/07.30–08.01` | 0.8429 | 65.03% | 0.66% |
 
+### `st_L5` 区间内同期 L1 改正类：标签敏感性实验（未采纳）
+
+2026-07-25 使用完全相同的 7-fold 协议和保留模型，做了一次独立标签策略实验：保留正式标签，同时把 reviewed `st_L5` 欺骗区间内的同期 L1 endpoint 临时由 0 改为 1。实验只写入独立张量和训练目录，没有修改中央 CSV、`configs/preprocessing.yml`、原张量或原 checkpoint。
+
+| 口径 | Pooled Macro-F1 | Precision | Recall | FAR | Session 等权 Macro-F1 |
+|---|---:|---:|---:|---:|---:|
+| 正式标签保留基线 | 0.8639 | 80.38% | 79.22% | 6.78% | 0.8502 ± 0.0933 |
+| L5 区间内 L1 同标正类并重训 | 0.8655 | 88.07% | 75.43% | 4.96% | 0.8818 ± 0.0890 |
+
+fold 2、3、6 的测试真值随策略改变，不能把表面 F1 上升直接解释为模型能力提升。固定旧 checkpoint、只按新标签重新评分后，再与新标签重训比较，fold 2/3/6 Macro-F1 分别由 `0.7648/0.8336/0.6428` 升至 `0.8450/0.9551/0.7122`，说明重训确实学到了一部分新增 L1 正类；但操场长 L5 仍没有质变。
+
+最关键的反证是：操场长 L5 中，新标签下 L1 Recall 为 54.91%，但不同设备从 0.09% 到 97.80% 极不稳定；原本 L5 正类的 Recall 又从 55.86% 降至 37.06%。Huawei L5 Recall 从 81.50% 降至 66.53%，RedMi K60 L5 从 46.82% 降至 23.72%。因此该策略只保留为“广义受影响/伴随干扰”口径的敏感性对照，不替代正式二分类标签，也不改变当前保留基线。
+
 ### 未解决的核心问题
 
 操场长 L5（fold 6）仍是当前主瓶颈。即使使用保留基线，Huawei Mate40 的 L1 FAR 为 39.40%，Huawei L5 的 Recall/FAR 为 81.50%/23.08%，RedMi K60 L5 的 Recall/FAR 为 46.82%/0%。这表明模型仍在不同设备间以相反方式利用 AGC 等特征：对 Huawei 容易误报，对 RedMi 容易漏报。
@@ -59,6 +72,7 @@
 2. 下一阶段优先处理数据和评价：建立 `trusted / questionable / excluded` Session 清单，复核操场长 L5 的 Huawei/RedMi 原始曲线和标签语义，并取得真正未参与过调参的独立 Session。
 3. 后续报告必须同时给出 pooled、Session 等权，以及 Session×Device×Band 的最坏组指标；不能用大 Session 的 pooled Accuracy 掩盖操场 L5 的失败。
 4. 历史设备级 LightGBM 的约 0.916x 分数属于不同任务、旧数据/标签和已反复使用的测试协议，不能与本节的卫星级结果混称“当前最佳”。
+5. `l5_l1_positive` 仅是显式可复现的实验策略；在老师确认目标语义前，正式标签仍保持原口径。
 
 ## 1. 一句话结论
 
@@ -69,8 +83,8 @@
 ## 2. Git 与工作区基线
 
 - 当前分支：`main`。
-- 当前本地 `HEAD` 为 `a19b2f7`，`origin/main` 为 `f434dd0`，本地分支落后 1 个提交。
-- `9477462` 已同步本地整理、标签修订和逐 signal/time-block 探索；`a19b2f7` 已加入 Session 级标签审查面板；`f434dd0` 的按 Session TOW 范围裁切逻辑已手工并入当前未提交工作区。
+- 本次同步前本地 `HEAD` 与 `origin/main` 均为 `86018cc`；后续状态以 Git 最新提交为准。
+- 本次同步新增可选 `l5_l1_positive` 标签策略、复现说明和上述敏感性实验结论；正式标签配置及保留基线均未改变。
 - 2026-07-23 重新生成的两套 label plots 位于被 Git 忽略的 `output/`，不会进入仓库。
 - Git 历史中的 P0–P5 是设备级路线的探索记录；保留代码与实验台账用于追溯，但不再将 LightGBM、DLinear 或某个双分支网络描述为已锁定主模型。
 
@@ -142,6 +156,7 @@ P0–P5 覆盖逐信号聚合、设备级统计张量、LightGBM/DLinear 等模�
 | 旧 8-fold Outer-Session / Inner-Time-Block | pooled Macro-F1 0.8386、Precision 0.7968、Recall 0.7168、FAR 6.19%；7 个有正类 Session 的 Macro-F1 0.8515 ± 0.1159 | 其余 Session 都可参与开发，误报较 6/1/1 少 | 包含现已剔除的短时全负操场 L5；不能直接按 fold 编号和新实验比较 |
 | full-19 7-fold 基线（历史对照） | pooled Macro-F1 0.8546、Precision 0.7914、Recall 0.7768、FAR 7.18%；Session Macro-F1 0.8495 ± 0.1142 | 作为后续 compact11 的严格同协议对照 | 不是当前保留基线；不能把它误称为最新结果 |
 | compact11 7-fold TCN16 d=.1（当前保留） | pooled Macro-F1 0.8639、Precision 0.8038、Recall 0.7922、FAR 6.78%；Session Macro-F1 0.8502 ± 0.0933 | 目前最好的完整 7-fold 结果，参数也从 2,024 降至 1,880 | pooled 仅 +0.0093、Session 均值仅 +0.0007；操场长 L5 仍未解决 |
+| `st_L5` 区间同期 L1 改正类（未采纳） | pooled Macro-F1 0.8655、Precision 0.8807、Recall 0.7543、FAR 4.96%；操场 L5 原频段 Recall 降至 37.06% | 新标签重训能学习部分 L1 受影响模式 | 测试语义已改变且设备差异极大；不应替代正式标签或保留基线 |
 
 full-19 7-fold 重训是这条路线的初始完整基线；其后 compact11 TCN16 d=.1 才是当前最新口径，详见文首“当前状态快照”。两者之间的 pooled 提升只有 0.0093，Session Macro-F1 均值仅提高 0.0007，且不同 Session 差异仍很大。所谓“样本量百万级”只是高度相关的 signal endpoints；真正独立的静态录制单元现在只有 7 个。
 
@@ -245,6 +260,7 @@ python pipeline_total/20_build_static_timeblock_tensors.py `
 - `protocols/static_time_block_outer_v2/`、`tensors/static_timeblock_outer_v2/` 和 `training/static_timeblock_outer_v2/`，作为本轮 7-fold 重训的协议、张量、checkpoint、日志和逐折指标；
 - `training/static_timeblock_outer_v2_explore_compact11_tcn16_d10/`，作为当前保留静态逐 signal 基线的 7-fold checkpoint、逐折指标和 fold 6 设备×频段诊断 CSV；
 - `training/static_timeblock_outer_v2_ablate_cn0_agc_coverage_v1/`，作为当前 10 维 stats 联合消融的 checkpoint、逐折指标和设备×频段诊断 CSV；
+- `tensors/static_timeblock_outer_v2_l5_l1_positive/`、`training/static_timeblock_outer_v2_l5_l1_positive_compact11_tcn16_d10/` 和固定旧 checkpoint 的同标签评分目录，作为一次未采纳的标签敏感性实验；结论已写入本文，后续磁盘清理时可整体删除并按需重建；
 - `output/README.md`。
 
 张量、checkpoint 和训练日志仍属于可重建产物；当前 `static_timeblock_outer_v2` 只因本轮交接与新旧对照暂时保留，指标稳定写入文档后可再归档或删除。当前两套 plots 只是本轮标签复核需要。旧产物已集中迁入被 Git 忽略的 `output/_rebuildable_archive_20260722/`。此外，旧 `new_building_label_plots/` 与 `playground_label_plots/` 未自动删除，其中旧操场目录仍含已剔除 Session 的 63 张残留图，不能再作为当前数据口径使用。当前执行环境的递归删除审批服务异常，因此磁盘空间尚未真正释放；确认无需恢复后可人工删除旧目录和归档。历史指标已经压缩进本文和 P0–P5 台账。

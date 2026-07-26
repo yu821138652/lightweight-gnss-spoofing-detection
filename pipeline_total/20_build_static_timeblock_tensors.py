@@ -28,6 +28,7 @@ Both NPZ families contain ``x``, ``mask``, ``y``, ``is_dynamic`` and
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 from dataclasses import dataclass
@@ -36,6 +37,7 @@ from typing import Iterable, Mapping
 
 import numpy as np
 import pandas as pd
+import yaml
 from tqdm import tqdm
 
 
@@ -80,6 +82,8 @@ STAT_SCALED_COUNT = 16
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - [%(levelname)s] - %(message)s")
 LOG = logging.getLogger(__name__)
 
+LABEL_POLICIES = ("original", "l5_l1_positive")
+
 
 def configure(time_steps: int, causal_reference_epochs: int = 0) -> None:
     global TIME_STEPS, GUARD_EPOCHS, STAT_NAMES, RAW_FEATURES, RAW_NAMES
@@ -95,6 +99,130 @@ def configure(time_steps: int, causal_reference_epochs: int = 0) -> None:
         for feature in STAT_FEATURES
         for stat in (f"Last{suffix}", f"Mean{suffix}", f"Std{suffix}", f"Slope{suffix}")
     ] + ["IsL5", f"SignalHistoryRatio{suffix}", f"AgcObservedRatio{suffix}"]
+
+
+def _apply_label_policy(
+    frame: pd.DataFrame,
+    policy: str,
+    label_config_path: Path | None,
+) -> tuple[pd.DataFrame, dict[str, object]]:
+    """Apply an explicit experimental label policy without changing the source CSV.
+
+    ``l5_l1_positive`` keeps every existing label and additionally marks L1
+    observations positive inside the reviewed ``st_L5`` attack intervals from
+    the formal preprocessing configuration.  This tests the broader target
+    semantics "signal affected during an L5 attack" while leaving the original
+    frequency-specific labels reproducible.
+    """
+    if policy not in LABEL_POLICIES:
+        raise ValueError(f"Unsupported label policy {policy!r}; expected one of {LABEL_POLICIES}")
+    summary: dict[str, object] = {
+        "policy": policy,
+        "configured_intervals": 0,
+        "reviewed_intervals": [],
+        "candidate_rows": 0,
+        "new_positive_rows": 0,
+        "affected_recordings": [],
+    }
+    if policy == "original":
+        return frame, summary
+    if label_config_path is None:
+        raise ValueError("--label-config is required for label policy l5_l1_positive")
+    if not label_config_path.is_file():
+        raise FileNotFoundError(label_config_path)
+    with label_config_path.open("r", encoding="utf-8") as handle:
+        config = yaml.safe_load(handle) or {}
+    config_sha256 = hashlib.sha256(label_config_path.read_bytes()).hexdigest()
+    session_labels = (
+        config.get("labeling", {})
+        .get("session_spoofing_tow_intervals", {})
+    )
+    if not isinstance(session_labels, dict):
+        raise ValueError(
+            "labeling.session_spoofing_tow_intervals must be a mapping in "
+            f"{label_config_path}"
+        )
+    candidate = pd.Series(False, index=frame.index)
+    configured_intervals = 0
+    interval_snapshot: list[dict[str, object]] = []
+    for environment, scenarios in session_labels.items():
+        if not isinstance(scenarios, dict):
+            continue
+        sessions = scenarios.get("st_L5", {})
+        if not isinstance(sessions, dict):
+            continue
+        for session, entry in sessions.items():
+            if not isinstance(entry, dict) or str(entry.get("status", "")) != "reviewed":
+                continue
+            recording_mask = (
+                frame["Environment"].astype(str).eq(str(environment))
+                & frame["Scenario"].astype(str).eq("st_L5")
+                & frame["Session"].astype(str).eq(str(session))
+                & frame["FreqBand"].eq(1)
+            )
+            if not recording_mask.any():
+                continue
+            intervals = entry.get("intervals", []) or []
+            for start_tow, end_tow in intervals:
+                start_tow = float(start_tow)
+                end_tow = float(end_tow)
+                if start_tow > end_tow:
+                    raise ValueError(
+                        f"Invalid st_L5 interval [{start_tow}, {end_tow}] for "
+                        f"{environment}/{session}"
+                    )
+                configured_intervals += 1
+                interval_snapshot.append({
+                    "Environment": str(environment),
+                    "Scenario": "st_L5",
+                    "Session": str(session),
+                    "start_tow": start_tow,
+                    "end_tow": end_tow,
+                })
+                candidate |= recording_mask & frame["TOW"].between(
+                    start_tow, end_tow, inclusive="both"
+                )
+    if configured_intervals == 0:
+        raise ValueError(
+            "label policy l5_l1_positive found no reviewed st_L5 intervals "
+            f"in {label_config_path}"
+        )
+    previous_positive = frame["Label"].eq(1)
+    newly_positive = candidate & ~previous_positive
+    if not candidate.any():
+        raise ValueError(
+            "label policy l5_l1_positive matched no L1 rows in the selected protocol data"
+        )
+    if not newly_positive.any():
+        raise ValueError(
+            "label policy l5_l1_positive changed no labels; matching L1 rows were already positive"
+        )
+    frame = frame.copy()
+    frame.loc[candidate, "Label"] = 1
+    affected = (
+        frame.loc[newly_positive, KEYS]
+        .value_counts(sort=False)
+        .rename("new_positive_rows")
+        .reset_index()
+        .to_dict(orient="records")
+    )
+    summary.update({
+        "label_config": str(label_config_path.resolve()),
+        "label_config_sha256": config_sha256,
+        "configured_intervals": configured_intervals,
+        "reviewed_intervals": interval_snapshot,
+        "candidate_rows": int(candidate.sum()),
+        "new_positive_rows": int(newly_positive.sum()),
+        "affected_recordings": affected,
+    })
+    LOG.info(
+        "label policy=%s candidate_rows=%d new_positive_rows=%d recordings=%d",
+        policy,
+        int(candidate.sum()),
+        int(newly_positive.sum()),
+        len(affected),
+    )
+    return frame, summary
 
 
 def _norm_key_frame(frame: pd.DataFrame) -> pd.DataFrame:
@@ -706,7 +834,6 @@ def build_fold(
     time_steps: int,
     block_size: int,
     agc_common_mode: str = "none",
-    causal_reference_epochs: int = 0,
 ) -> dict[str, dict[str, int]]:
     configure(time_steps, causal_reference_epochs)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -731,6 +858,7 @@ def build_fold(
     df = df.merge(outer[[*KEYS, "outer_role"]], on=KEYS, how="inner", validate="many_to_one")
     if df.empty:
         raise ValueError("No static reviewed rows match outer manifest")
+    df, label_policy_summary = _apply_label_policy(df, label_policy, label_config_path)
     if block_manifest_path is None:
         block_manifest_path = output_dir / "block_manifest.csv"
         block = _auto_block_manifest(df, outer, block_manifest_path, block_size)
@@ -859,11 +987,6 @@ def build_fold(
         "block_size_canonical_epochs": block_size, "guard_epochs": GUARD_EPOCHS,
         "windows_cross_split_boundary": False, "stats_history_crosses_boundary": False,
         "agc_common_mode": agc_common_mode,
-        "causal_reference_epochs": causal_reference_epochs,
-        "causal_reference_semantics": (
-            "per-source, per-signal causal initial-reference delta/z features"
-            if causal_reference_epochs else "disabled"
-        ),
         "agc_feature_interpretation": (
             "AgcDb - median(AgcDb | same source, TimeNanos, FreqBand)"
             if agc_common_mode == "same_time_band_median" else "raw AgcDb"
@@ -889,10 +1012,6 @@ def main() -> None:
         "--agc-common-mode", choices=("none", "same_time_band_median"), default="none",
         help="transform AGC before raw windows and AGC statistic construction",
     )
-    parser.add_argument(
-        "--causal-reference-epochs", type=int, default=0,
-        help="initial prior observations per source/signal used for frozen causal C/N0 and AGC references; 0 disables",
-    )
     args = parser.parse_args()
     if args.time_steps < 2:
         parser.error("--time-steps must be at least 2")
@@ -902,7 +1021,7 @@ def main() -> None:
         parser.error("--causal-reference-epochs must be non-negative")
     summary = build_fold(
         args.csv, args.outer_manifest, args.output_dir, args.block_manifest,
-        args.time_steps, args.block_size, args.agc_common_mode, args.causal_reference_epochs,
+        args.time_steps, args.block_size, args.agc_common_mode,
     )
     print(json.dumps(summary, indent=2))
 
