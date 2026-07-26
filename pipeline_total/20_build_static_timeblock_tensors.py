@@ -834,6 +834,9 @@ def build_fold(
     time_steps: int,
     block_size: int,
     agc_common_mode: str = "none",
+    causal_reference_epochs: int = 0,
+    label_policy: str = "original",
+    label_config_path: Path | None = None,
 ) -> dict[str, dict[str, int]]:
     configure(time_steps, causal_reference_epochs)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -987,6 +990,12 @@ def build_fold(
         "block_size_canonical_epochs": block_size, "guard_epochs": GUARD_EPOCHS,
         "windows_cross_split_boundary": False, "stats_history_crosses_boundary": False,
         "agc_common_mode": agc_common_mode,
+        "causal_reference_epochs": causal_reference_epochs,
+        "causal_reference_semantics": (
+            "causal same-signal reference features are enabled"
+            if causal_reference_epochs else "disabled"
+        ),
+        "label_policy": label_policy_summary,
         "agc_feature_interpretation": (
             "AgcDb - median(AgcDb | same source, TimeNanos, FreqBand)"
             if agc_common_mode == "same_time_band_median" else "raw AgcDb"
@@ -1012,6 +1021,12 @@ def main() -> None:
         "--agc-common-mode", choices=("none", "same_time_band_median"), default="none",
         help="transform AGC before raw windows and AGC statistic construction",
     )
+    parser.add_argument(
+        "--causal-reference-epochs", type=int, default=0,
+        help="append same-signal causal reference features using this many prior epochs",
+    )
+    parser.add_argument("--label-policy", choices=LABEL_POLICIES, default="original")
+    parser.add_argument("--label-config", type=Path, default=None)
     args = parser.parse_args()
     if args.time_steps < 2:
         parser.error("--time-steps must be at least 2")
@@ -1021,7 +1036,8 @@ def main() -> None:
         parser.error("--causal-reference-epochs must be non-negative")
     summary = build_fold(
         args.csv, args.outer_manifest, args.output_dir, args.block_manifest,
-        args.time_steps, args.block_size, args.agc_common_mode,
+        args.time_steps, args.block_size, args.agc_common_mode, args.causal_reference_epochs,
+        args.label_policy, args.label_config,
     )
     print(json.dumps(summary, indent=2))
 
