@@ -1,12 +1,15 @@
-"""Build raw and per-signal-statistic tensors for the static time-block protocol.
+"""Build raw and per-signal-statistic tensors for a time-block protocol.
 
 This builder is deliberately separate from the legacy random/recording split
-builder.  One complete recording (``Environment/Scenario/Session``) is kept
-as the outer test set.  The remaining recordings are divided into contiguous
-canonical UTC time blocks for train/validation.  Windows are made *after* the
-block assignment and a window is emitted only when all of its epochs belong to
-the same split and the same continuous run.  Consequently neither a raw
-window nor a per-signal statistic history can borrow observations across a
+builder.  By default it retains only reviewed static (``st_``) rows, preserving
+the original static protocol.  ``--data-scope mixed`` instead retains reviewed
+static and dynamic (``dy_``) rows from one unified outer manifest.  One or more
+complete recordings (``Environment/Scenario/Session``) are kept as the outer
+test set.  The remaining recordings are divided into contiguous canonical UTC
+time blocks for train/validation.  Windows are made *after* the block
+assignment and a window is emitted only when all of its epochs belong to the
+same split and the same continuous run.  Consequently neither a raw window nor
+a per-signal statistic history can borrow observations across a
 train/validation boundary.
 
 The canonical clock is ``utcTimeMillis``.  ``TimeNanos`` is used only to order
@@ -83,6 +86,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - [%(levelname)s] - 
 LOG = logging.getLogger(__name__)
 
 LABEL_POLICIES = ("original", "l5_l1_positive")
+DATA_SCOPES = ("static", "mixed")
 
 
 def configure(time_steps: int, causal_reference_epochs: int = 0) -> None:
@@ -265,12 +269,12 @@ def _load_outer_manifest(path: Path) -> pd.DataFrame:
     unknown = set(manifest["split"].astype(str)).difference(allowed)
     if unknown:
         raise ValueError(f"Unsupported outer split values: {sorted(unknown)}")
-    # Direction 2 has one complete test recording and development recordings.
+    # Complete test recordings and development recordings are separated here.
     # Treat an explicitly marked val recording as development too; its inner
     # blocks will be used for validation, never as an outer test.
     manifest["outer_role"] = np.where(manifest["split"].astype(str) == "test", "test", "dev")
-    if int((manifest["outer_role"] == "test").sum()) != 1:
-        raise ValueError("Expected exactly one outer test recording")
+    if int((manifest["outer_role"] == "test").sum()) < 1:
+        raise ValueError("Expected at least one outer test recording")
     return manifest
 
 
@@ -470,6 +474,33 @@ def _assign_epoch_metadata(
                 hit = (epoch_indices >= lo) & (epoch_indices < hi)
                 splits[hit] = str(row["split"])
                 segments[hit] = str(row.get("segment_id", row.get("block_id", i)))
+    return splits, segments
+
+
+def _enforce_outer_role(
+    splits: np.ndarray,
+    segments: np.ndarray,
+    outer_role: str,
+    source_key: object,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Keep an outer test source intact and reject cross-fold manifests."""
+
+    if outer_role == "test":
+        unexpected = sorted(set(splits.tolist()).difference({"test", "unassigned"}))
+        if unexpected:
+            raise ValueError(
+                f"Outer test source {source_key} has non-test block assignments {unexpected}; "
+                "the outer and block manifests likely belong to different folds"
+            )
+        return (
+            np.where(splits == "unassigned", "test", splits),
+            np.where(segments == "unassigned", "0", segments),
+        )
+    if np.any(splits == "test"):
+        raise ValueError(
+            f"Development source {source_key} has test block assignments; "
+            "the outer and block manifests likely belong to different folds"
+        )
     return splits, segments
 
 
@@ -838,7 +869,10 @@ def build_fold(
     causal_reference_epochs: int = 0,
     label_policy: str = "original",
     label_config_path: Path | None = None,
+    data_scope: str = "static",
 ) -> dict[str, dict[str, int]]:
+    if data_scope not in DATA_SCOPES:
+        raise ValueError(f"Unsupported data scope {data_scope!r}; expected one of {DATA_SCOPES}")
     configure(time_steps, causal_reference_epochs)
     output_dir.mkdir(parents=True, exist_ok=True)
     raw_required = [
@@ -850,7 +884,11 @@ def build_fold(
     missing = set(raw_required).difference(df.columns)
     if missing:
         raise ValueError(f"Processed CSV missing columns: {sorted(missing)}")
-    df = df[(df["LabelStatus"].astype(str) == "reviewed") & df["Scenario"].astype(str).str.startswith("st_")].copy()
+    scenario = df["Scenario"].astype(str)
+    selected_scenarios = scenario.str.startswith("st_")
+    if data_scope == "mixed":
+        selected_scenarios |= scenario.str.startswith("dy_")
+    df = df[(df["LabelStatus"].astype(str) == "reviewed") & selected_scenarios].copy()
     for key in KEYS + ["DeviceName", SOURCE_COL, "signal_id"]:
         df[key] = df[key].astype(str)
     df["Label"] = (pd.to_numeric(df["Label"], errors="coerce").fillna(0) > 0).astype(np.int8)
@@ -861,7 +899,27 @@ def build_fold(
     # Restrict to recordings listed by the outer protocol and retain its role.
     df = df.merge(outer[[*KEYS, "outer_role"]], on=KEYS, how="inner", validate="many_to_one")
     if df.empty:
-        raise ValueError("No static reviewed rows match outer manifest")
+        raise ValueError(f"No reviewed {data_scope} rows match outer manifest")
+    matched_recordings = df[KEYS].drop_duplicates()
+    recording_coverage = outer[KEYS].merge(
+        matched_recordings,
+        on=KEYS,
+        how="left",
+        indicator=True,
+        validate="one_to_one",
+    )
+    missing_recordings = recording_coverage.loc[recording_coverage["_merge"] != "both", KEYS]
+    if not missing_recordings.empty:
+        raise ValueError(
+            f"Outer manifest contains recordings absent from reviewed {data_scope} CSV rows:\n"
+            + missing_recordings.to_string(index=False)
+        )
+    selected_test_recordings = df.loc[df["outer_role"] == "test", KEYS].drop_duplicates()
+    expected_test_count = int((outer["outer_role"] == "test").sum())
+    if len(selected_test_recordings) != expected_test_count:
+        raise RuntimeError(
+            f"Matched {len(selected_test_recordings)} outer test recordings, expected {expected_test_count}"
+        )
     df, label_policy_summary = _apply_label_policy(df, label_policy, label_config_path)
     if block_manifest_path is None:
         block_manifest_path = output_dir / "block_manifest.csv"
@@ -933,11 +991,11 @@ def build_fold(
             splits, segments = _assign_epoch_metadata(
                 block, key_tuple, source_epoch["epoch_utc_millis"].to_numpy(), intervals, epoch_indices
             )
-            # A complete outer test source may not be listed in a development
-            # block manifest.  It remains test, with source-gap segmentation.
-            if outer_role == "test":
-                splits = np.where(splits == "unassigned", "test", splits)
-                segments = np.where(segments == "unassigned", "0", segments)
+            # A complete outer test source may be absent from a development
+            # manifest, but it may never inherit that manifest's train/val role.
+            splits, segments = _enforce_outer_role(
+                splits, segments, outer_role, source_key
+            )
             if np.all(splits == "unassigned"):
                 raise ValueError(f"No block interval/epoch assignment matches source {source_key}")
         source_identity = (*key_tuple, device_name, str(source_key[4]))
@@ -949,6 +1007,7 @@ def build_fold(
             recording_to_id[key_tuple],
             source_to_id[source_identity],
             signal_to_id,
+            is_dynamic=key_tuple[1].startswith("dy_"),
         )
         for split, part in source_parts.items():
             chunks[split].append(part)
@@ -983,6 +1042,22 @@ def build_fold(
     (output_dir / "raw" / "feature_names.json").write_text(json.dumps(RAW_NAMES, indent=2), encoding="utf-8")
     (output_dir / "stats" / "feature_names.json").write_text(json.dumps(STAT_NAMES, indent=2), encoding="utf-8")
     metadata = {
+        "data_scope": data_scope,
+        "included_scenario_prefixes": ["st_"] if data_scope == "static" else ["st_", "dy_"],
+        "included_scenarios": sorted(df["Scenario"].astype(str).unique().tolist()),
+        "recording_counts": {
+            "static": int(df.loc[df["Scenario"].astype(str).str.startswith("st_"), KEYS].drop_duplicates().shape[0]),
+            "dynamic": int(df.loc[df["Scenario"].astype(str).str.startswith("dy_"), KEYS].drop_duplicates().shape[0]),
+            "outer_test": int(len(selected_test_recordings)),
+        },
+        "window_counts": {
+            split: {
+                "total": int(len(data["dynamic"])),
+                "static": int((~data["dynamic"]).sum()),
+                "dynamic": int(data["dynamic"].sum()),
+            }
+            for split, data in datasets.items()
+        },
         "time_steps": TIME_STEPS, "max_signals": MAX_SIGNALS,
         "raw_feature_count": len(RAW_FEATURES), "stats_feature_count": len(STAT_NAMES),
         "raw_features": RAW_NAMES, "stats_features": STAT_NAMES,
@@ -1028,6 +1103,10 @@ def main() -> None:
     )
     parser.add_argument("--label-policy", choices=LABEL_POLICIES, default="original")
     parser.add_argument("--label-config", type=Path, default=None)
+    parser.add_argument(
+        "--data-scope", choices=DATA_SCOPES, default="static",
+        help="static keeps reviewed st_ rows; mixed keeps reviewed st_ and dy_ rows",
+    )
     args = parser.parse_args()
     if args.time_steps < 2:
         parser.error("--time-steps must be at least 2")
@@ -1038,7 +1117,7 @@ def main() -> None:
     summary = build_fold(
         args.csv, args.outer_manifest, args.output_dir, args.block_manifest,
         args.time_steps, args.block_size, args.agc_common_mode, args.causal_reference_epochs,
-        args.label_policy, args.label_config,
+        args.label_policy, args.label_config, args.data_scope,
     )
     print(json.dumps(summary, indent=2))
 

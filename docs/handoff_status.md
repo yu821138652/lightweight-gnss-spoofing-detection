@@ -4,14 +4,28 @@
 
 ## 当前状态快照（2026-07-27）
 
-> 本节是当前静态逐 `signal_id` 路线的权威状态。后续各节保留此前 7-fold 基线、标签敏感性和历史实验的形成过程；若数值冲突，以本节和 [Fold 6 诊断快照](static_signal_fold6_diagnostics_20260727.md) 为准。
+> 本节是当前逐 `signal_id` 路线的权威状态。后续各节保留此前 7-fold 静态基线、标签敏感性和历史实验的形成过程；若数值冲突，以本节、[静态+动态统一基线](static_dynamic_signal_cv4_20260727.md) 和 [Fold 6 诊断快照](static_signal_fold6_diagnostics_20260727.md) 为准。
 
 ### 任务、数据和结果边界
 
-- 当前可比较的主实验使用 `LabelStatus=reviewed` 的静态 `st_*` 数据。动态数据没有进入本轮训练，也不应与此处结果横向比较。
-- 真正独立的测试单位只有 7 个完整静态 Session。当前 7 个 outer test 均已被读取并参与过误差诊断；它们不再是新的独立盲测。
-- 完整 7-fold `compact11 + TCN16 + dropout=0.1` 继续作为保留对照基线。它回答的是清理后静态 Session 协议下的完整折次表现，不是最终模型声明。
+- 完整 7-fold `compact11 + TCN16 + dropout=0.1` 继续作为纯静态保留对照。它回答的是 7 个 reviewed 静态 Session 下的表现，不是最终模型声明。
+- 2026-07-27 已用相同 W5、compact11 和 TCN16 配置完成统一静态+动态 4-fold outer-CV v2：24 个完整 Session（7 静态、17 动态）各 test 一次。同一采集事件通过 `outer_group` 保持完整，v2 是后续 mixed 路线的固定起点，不替代纯静态对照。
+- 当前 7 个静态和 17 个动态 outer test 都已被读取；后续依据这些结果设计模型时均属于迭代式开发，不能再称新的独立盲测。
 - 2026-07-26 至 27 的 E9-E11 仅围绕已反复读取的操场长 L5 Fold 6 做诊断。它们使用 all-development fixed-epoch refit，且 E10/E11 在测试时将非 L5 endpoint 强制为正常；这些数字只用于定位 L5 的错误结构，不能与通用 7-fold 基线的 Macro-F1 直接排序。
+
+### 统一静态+动态基线已确认事实
+
+| Test 口径 | Macro-F1 | Precision | Recall | FAR | Session 等权 Macro-F1 |
+|---|---:|---:|---:|---:|---:|
+| Overall | 0.8656 | 78.33% | 79.37% | 5.90% | 0.7405 ± 0.1210 |
+| Static | 0.8782 | 80.73% | 83.46% | 6.99% | 0.8333 ± 0.0974 |
+| Dynamic | 0.7693 | 61.82% | 55.11% | 3.82% | 0.7024 ± 0.1085 |
+
+- Overall 被长静态 Session 明显主导，判断动态效果必须看 dynamic 子集和 Session 等权结果。
+- `dy_L5` pooled Macro-F1 仅 0.5647、Precision 13.03%、Recall 18.67%；四个 `dy_L5` Session 等权为 `0.5733 ± 0.0427`，仍是最明确的瓶颈。
+- mixed 模型在同一批静态 endpoint 上的 pooled Macro-F1 比纯静态基线高 0.0143，但静态 Session 等权低 0.0169；不同静态 Session 有升有降，不能称为稳定提升。
+- v1 试跑曾让新主楼两个重叠 `st_L5` Session 和操场两个重叠 `dy_L_15` Session 跨 outer fold，且 256-epoch 内层块使短动态 Session 严重失衡或完全缺少 validation。v2 将两对采集事件绑定为 `G08/G09`，改用 64-epoch 严格 validation；四折 raw validation 为 20.20%-20.78%，六种 Scenario 均有正负支持。
+- 协议、逐场景结果、全负动态 Session 的解释和复现入口见 [完整实验记录](static_dynamic_signal_cv4_20260727.md)。
 
 ### Fold 6 已确认事实
 
@@ -102,7 +116,7 @@
 - `67351eb 修复(分层检测): 固定默认标签配置路径`
 ## 1. 一句话结论
 
-项目目前仍处于“数据与评估协议收敛”阶段，尚未确定最终模型。当前静态逐 `signal_id` 的保留基线是 `compact11 + TCN16 + dropout=0.1`；它在完整 7-fold 的 pooled Macro-F1 为 0.8639，但 Session 等权均值仅为 `0.8502 ± 0.0933`，操场长 L5 仍只有 0.6761。跨 Session、设备和场景的波动仍很大；动态场景以及操场 L5/L15 的主要瓶颈更像是标签可信度、设备观测差异和特征域偏移，而不是模型容量不足。
+项目目前仍处于“数据与评估协议收敛”阶段，尚未确定最终模型。纯静态保留基线仍是 `compact11 + TCN16 + dropout=0.1`，7-fold pooled Macro-F1 为 0.8639、Session 等权为 `0.8502 ± 0.0933`；相同配置的静态+动态 4-fold v2 基线 overall 为 0.8656，但 dynamic 仅为 0.7693、动态 Session 等权仅为 `0.7024 ± 0.1085`，其中 `dy_L5` 只有 0.5647。跨 Session、设备和场景的波动仍很大；当前瓶颈更像是标签可信度、设备观测差异和特征域偏移，而不是模型容量不足。
 
 因此，当前没有可作为最终部署结论的模型；任何结果引用都必须保留标签口径、Session 协议和 test 已被多次用于诊断的边界。
 
@@ -287,13 +301,14 @@ python pipeline_total/20_build_static_timeblock_tensors.py `
 - `training/static_timeblock_outer_v2_explore_compact11_tcn16_d10/`，作为当前保留静态逐 signal 基线的 7-fold checkpoint、逐折指标和 fold 6 设备×频段诊断 CSV；
 - `training/static_timeblock_outer_v2_ablate_cn0_agc_coverage_v1/`，作为当前 10 维 stats 联合消融的 checkpoint、逐折指标和设备×频段诊断 CSV；
 - `tensors/static_timeblock_outer_v2_l5_l1_positive/`、`training/static_timeblock_outer_v2_l5_l1_positive_compact11_tcn16_d10/` 和固定旧 checkpoint 的同标签评分目录，作为一次未采纳的标签敏感性实验；结论已写入本文，后续磁盘清理时可整体删除并按需重建；
+- `protocols/mixed_timeblock_outer_cv4_v2/`、`protocols/mixed_timeblock_outer_cv4_w5_v2/`、`tensors/mixed_timeblock_outer_cv4_w5_v2/` 和 `training/mixed_timeblock_outer_cv4_w5_compact11_tcn16_d10_v2/`，作为可信统一静态+动态 4-fold 基线的可重建协议、张量、checkpoint 和汇总；v1 仅保留为发现协议问题的历史试跑，可在确认不需追溯后删除；
 - `output/README.md`。
 
 张量、checkpoint 和训练日志仍属于可重建产物；当前 `static_timeblock_outer_v2` 只因本轮交接与新旧对照暂时保留，指标稳定写入文档后可再归档或删除。当前两套 plots 只是本轮标签复核需要。旧产物已集中迁入被 Git 忽略的 `output/_rebuildable_archive_20260722/`。此外，旧 `new_building_label_plots/` 与 `playground_label_plots/` 未自动删除，其中旧操场目录仍含已剔除 Session 的 63 张残留图，不能再作为当前数据口径使用。当前执行环境的递归删除审批服务异常，因此磁盘空间尚未真正释放；确认无需恢复后可人工删除旧目录和归档。历史指标已经压缩进本文和 P0–P5 台账。
 
 ## 9. 交接阅读顺序
 
-1. 先读本文的当前状态快照和 `docs/static_signal_fold6_diagnostics_20260727.md`，区分完整 7-fold 对照与 Fold 6 迭代式诊断。
+1. 先读本文的当前状态快照、`docs/static_dynamic_signal_cv4_20260727.md` 和 `docs/static_signal_fold6_diagnostics_20260727.md`，区分 mixed 4-fold 基线、静态 7-fold 对照与 Fold 6 迭代式诊断。
 2. 再核对 `configs/preprocessing.yml`、`docs/data_inventory.md` 和 label review 产物，确认要引用的标签口径与数据快照。
 3. 复现实验时仅使用 `pipeline_total/README.md` 中对应脚本、张量目录和 checkpoint 记录；训练输出仍写入被 Git 忽略的 `output/`。
 4. 对外陈述结果时保留协议、标签语义和 test 已被使用的边界，不将单一折次或不同任务的指标混为“当前最佳”。
@@ -301,6 +316,7 @@ python pipeline_total/20_build_static_timeblock_tensors.py `
 ## 10. 文档入口
 
 - 当前状态与交接：本文。
+- 静态+动态逐 signal 4-fold 基线：`docs/static_dynamic_signal_cv4_20260727.md`。
 - Fold 6 诊断结果快照：`docs/static_signal_fold6_diagnostics_20260727.md`。
 - 组会汇报提纲与讲稿：`docs/group_meeting_brief_20260725.md`。
 - P0–P5 历史实验：`docs/experiment_registry.md`。
