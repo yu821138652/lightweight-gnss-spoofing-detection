@@ -36,6 +36,21 @@ ROOT = Path(__file__).resolve().parents[1]
 LOG = logging.getLogger(__name__)
 MAX_GAP_SECONDS = 10.0
 
+# Frequency is the primary visual grouping in manual review.  Individual
+# signals receive distinct shades within their physical frequency band.
+BAND_COLORS = {
+    1: "#1f5f99",
+    5: "#b42318",
+}
+BAND_LIGHT_COLORS = {
+    1: "#dbeafe",
+    5: "#fee2e2",
+}
+BAND_CMAPS = {
+    1: plt.get_cmap("Blues"),
+    5: plt.get_cmap("Reds"),
+}
+
 plt.rcParams["font.family"] = ["Microsoft YaHei", "SimHei", "DejaVu Sans"]
 plt.rcParams["axes.unicode_minus"] = False
 
@@ -210,38 +225,74 @@ def split_line_segments(x: np.ndarray, y: np.ndarray) -> list[np.ndarray]:
     return [np.column_stack((x[part], y[part])) for part in parts if len(part) > 1]
 
 
+def signal_colors_by_band(device_frame: pd.DataFrame) -> dict[str, tuple[float, float, float, float] | str]:
+    """Assign deterministic blue/red shades to signals by observed frequency."""
+
+    colors: dict[str, tuple[float, float, float, float] | str] = {}
+    for band in (1, 5):
+        signals = sorted(
+            device_frame.loc[
+                pd.to_numeric(device_frame["FreqBand"], errors="coerce").eq(band), "plot_signal_id"
+            ].dropna().astype(str).unique()
+        )
+        if not signals:
+            continue
+        # Avoid near-white and near-black colormap endpoints so every trace
+        # remains visible against the white review canvas.
+        shades = BAND_CMAPS[band](np.linspace(0.42, 0.90, len(signals)))
+        colors.update(zip(signals, shades))
+    for signal in device_frame["plot_signal_id"].dropna().astype(str).unique():
+        colors.setdefault(signal, "#6b7280")
+    return colors
+
+
 def draw_label_timeline(axis, device_frame: pd.DataFrame, intervals: list[tuple[float, float]], bands: set[int]) -> None:
     axis.set_ylim(0.4, 5.6)
     axis.set_yticks([1, 5], ["L1", "L5"])
     axis.grid(axis="x", alpha=0.22)
     axis.grid(axis="y", alpha=0.16)
+    for band in (1, 5):
+        axis.axhspan(band - 0.28, band + 0.28, color=BAND_LIGHT_COLORS[band], alpha=0.48, zorder=0)
     for start, end in intervals:
-        axis.axvspan(start, end, color="tab:red", alpha=0.13, zorder=0)
+        axis.axvspan(start, end, color="#6b7280", alpha=0.12, zorder=0)
         for band in bands:
-            axis.broken_barh([(start, end - start)], (band - 0.28, 0.56), facecolors="tab:red", alpha=0.78)
+            axis.broken_barh(
+                [(start, end - start)],
+                (band - 0.28, 0.56),
+                facecolors=BAND_COLORS.get(band, "#6b7280"),
+                alpha=0.82,
+            )
     observed = device_frame.loc[device_frame["Label"].fillna(0).astype(int) > 0]
     for band, group in observed.groupby("FreqBand", sort=True):
         if band not in {1, 5}:
             continue
-        axis.scatter(group["TOW"], np.full(len(group), band), marker="|", s=10, color="black", alpha=0.32)
+        axis.scatter(
+            group["TOW"],
+            np.full(len(group), band),
+            marker="|",
+            s=10,
+            color=BAND_COLORS[int(band)],
+            alpha=0.62,
+        )
     axis.set_ylabel("Formal label", fontsize=8)
 
 
 def draw_feature(axis, device_frame: pd.DataFrame, feature: str, intervals: list[tuple[float, float]], target_signals: set[str]) -> None:
     for start, end in intervals:
-        axis.axvspan(start, end, color="tab:red", alpha=0.13, zorder=0)
-        axis.axvline(start, color="tab:red", linestyle="--", linewidth=0.55, alpha=0.7)
-        axis.axvline(end, color="tab:red", linestyle="--", linewidth=0.55, alpha=0.7)
+        axis.axvspan(start, end, color="#6b7280", alpha=0.12, zorder=0)
+        axis.axvline(start, color="#6b7280", linestyle="--", linewidth=0.55, alpha=0.7)
+        axis.axvline(end, color="#6b7280", linestyle="--", linewidth=0.55, alpha=0.7)
     if feature not in device_frame.columns or not device_frame[feature].notna().any():
         axis.text(0.5, 0.5, "No data", transform=axis.transAxes, ha="center", va="center", color="0.45")
         return
     signals = sorted(device_frame["plot_signal_id"].dropna().unique())
-    colors = plt.cm.turbo(np.linspace(0, 1, max(1, len(signals))))
+    colors = signal_colors_by_band(device_frame)
     normal_segments: list[np.ndarray] = []
     normal_colors: list[np.ndarray] = []
     target_segments: list[np.ndarray] = []
     target_colors: list[np.ndarray] = []
-    for signal, color in zip(signals, colors):
+    for signal in signals:
+        color = colors[str(signal)]
         group = device_frame.loc[device_frame["plot_signal_id"] == signal].sort_values(["TOW", "TimeNanos"], kind="mergesort")
         segments = split_line_segments(
             group["TOW"].to_numpy(dtype=float),
@@ -333,8 +384,9 @@ def render_dashboard(
     figure.text(
         0.01,
         0.008,
-        "Red span: formal session-level attack interval. Red label bar: affected frequency. "
-        "Black ticks: rows currently labeled positive. Colored curves: independent signal_id; stronger curves contain positive rows.",
+        "L1: blue shades. L5: red shades. The gray span is the formal session-level attack interval; "
+        "the darker band bar and ticks mark rows currently labeled positive. Each shade is one independent signal_id; "
+        "stronger curves contain positive rows.",
         ha="left",
         va="bottom",
         fontsize=7.5,
