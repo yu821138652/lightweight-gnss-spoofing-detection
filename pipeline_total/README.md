@@ -1,6 +1,6 @@
 ﻿# pipeline_total 脚本索引
 
-当前状态以 `docs/handoff_status.md` 为准。本目录分为三段：01–10 是既有数据与基础实验链；11–18 是 P0–P5 历史设备级探索；19–21、23 是最近的静态逐 signal 实验入口。22 是当前推荐的 Session 级标签审查工具。
+当前状态以 `docs/handoff_status.md` 为准。01–10 是既有数据与基础实验链；11–18 是 P0–P5 历史设备级探索；19–35 包含静态逐 signal 主链及其诊断分支；38–40 是当前统一静态+动态逐 signal 4-fold 基线。22 是当前推荐的 Session 级标签审查工具，36–37 还保留设备事件和动态增广的独立探索入口。
 
 ## 01–10：既有数据与诊断链
 
@@ -661,6 +661,109 @@ python pipeline_total/35_refit_static_l5_device_heads.py `
   --seed 2026 `
   --num-workers 0
 ```
+
+## 38–40：统一静态+动态逐 signal 4-fold 基线
+
+该链固定 W5、compact11、TCN16 和原 target-band-only 标签，只把数据范围扩展到 7 个 reviewed 静态 Session 与 17 个 reviewed 动态 Session。每个完整 Session 在 4-fold outer-CV 中恰好 test 一次；每折 6 test、18 development。同一采集事件由 `outer_group` 绑定，不能跨 train/test；outer assignment 默认将每折正类行偏差限制在 25% 内。完整指标与解释见 `docs/static_dynamic_signal_cv4_20260727.md`。
+
+以下命令刻意写入独立的 `*_repro_v2` 目录；不要覆盖本轮已锁定的 `mixed_timeblock_outer_cv4_w5_compact11_tcn16_d10_v2` checkpoint 和 test 诊断。v1 存在采集事件跨 fold 和短动态 Session 缺少 validation 的问题，只能作为历史试跑。
+
+先从仓库内固定的 24-Session 清单生成确定性的 outer assignment：
+
+```powershell
+python pipeline_total/38_generate_mixed_timeblock_protocol.py `
+  --source-recording-manifest docs/protocols/mixed_timeblock_outer_cv4_v2/source_recording_manifest.csv `
+  --output-dir output/protocols/mixed_timeblock_outer_cv4_repro_v2
+```
+
+再在每折 development 内生成连续时间块 train/validation 和 W5 guard：
+
+```powershell
+python pipeline_total/19_generate_static_timeblock_protocol.py `
+  --csv output/processed_gnss_data.csv `
+  --source-recording-manifest output/protocols/mixed_timeblock_outer_cv4_repro_v2/fold_assignment.csv `
+  --output-dir output/protocols/mixed_timeblock_outer_cv4_w5_repro_v2 `
+  --data-scope mixed `
+  --time-steps 5 `
+  --block-epochs 64 `
+  --val-fraction 0.20 `
+  --val-size-tolerance 0.02 `
+  --segment-gap-seconds 2 `
+  --strict-validation
+```
+
+四折分别构建张量；`--data-scope mixed` 不可省略：
+
+```powershell
+1..4 | ForEach-Object {
+  $fold = $_
+  python pipeline_total/20_build_static_timeblock_tensors.py `
+    --csv output/processed_gnss_data.csv `
+    --outer-manifest "output/protocols/mixed_timeblock_outer_cv4_w5_repro_v2/fold_$fold/recording_split_manifest.csv" `
+    --block-manifest "output/protocols/mixed_timeblock_outer_cv4_w5_repro_v2/fold_$fold/epoch_split_manifest.csv" `
+    --output-dir "output/tensors/mixed_timeblock_outer_cv4_w5_repro_v2/fold_$fold" `
+    --data-scope mixed `
+    --time-steps 5 `
+    --block-size 256
+}
+```
+
+训练阶段不得读取 test。四折均用相同参数，按各自 validation Macro-F1 锁定 checkpoint：
+
+```powershell
+1..4 | ForEach-Object {
+  $fold = $_
+  python pipeline_total/21_train_static_signal_fusion.py `
+    --data-dir "output/tensors/mixed_timeblock_outer_cv4_w5_repro_v2/fold_$fold" `
+    --output-dir "output/training/mixed_timeblock_outer_cv4_w5_compact11_tcn16_d10_repro_v2/fold_$fold/tcn" `
+    --encoder tcn `
+    --hidden-dim 16 `
+    --dropout 0.1 `
+    --lr 0.001 `
+    --weight-decay 0.001 `
+    --raw-feature-set full `
+    --stats-feature-set cn0_agc_coverage_rx_time_std `
+    --epochs 30 `
+    --batch-size 256 `
+    --patience 6 `
+    --seed 2026 `
+    --num-workers 0
+}
+```
+
+只有四个 checkpoint 全部锁定后才依次执行 test-only 和分组评估。`21` 和 `39` 都会在打开 test 前核对 checkpoint/tensor 的折次及 validation support，误配其它 fold 会直接失败：
+
+```powershell
+1..4 | ForEach-Object {
+  $fold = $_
+  $data = "output/tensors/mixed_timeblock_outer_cv4_w5_repro_v2/fold_$fold"
+  $result = "output/training/mixed_timeblock_outer_cv4_w5_compact11_tcn16_d10_repro_v2/fold_$fold/tcn"
+  python pipeline_total/21_train_static_signal_fusion.py `
+    --data-dir $data `
+    --output-dir $result `
+    --encoder tcn `
+    --raw-feature-set full `
+    --stats-feature-set cn0_agc_coverage_rx_time_std `
+    --batch-size 256 `
+    --num-workers 0 `
+    --test-only
+  python pipeline_total/39_evaluate_mixed_signal_groups.py `
+    --data-dir $data `
+    --checkpoint "$result/best_signal_tcn_stats_mlp_fusion.pt" `
+    --output-dir $result `
+    --batch-size 256
+}
+```
+
+最后只读汇总四折混淆矩阵，并用 assignment 校验 24 个 Session 的 test 唯一性：
+
+```powershell
+python pipeline_total/40_aggregate_mixed_signal_cv.py `
+  --training-root output/training/mixed_timeblock_outer_cv4_w5_compact11_tcn16_d10_repro_v2 `
+  --fold-assignment output/protocols/mixed_timeblock_outer_cv4_repro_v2/fold_assignment.csv
+```
+
+`39` 输出逐折 overall、motion、Scenario、Session 与 device×motion×band 指标；`40` 输出 pooled、fold 等权和 Session 等权汇总。两者都只读取锁定结果，不参与模型选择或阈值调整。
 
 ## 生成物策略
 

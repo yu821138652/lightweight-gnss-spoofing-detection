@@ -18,6 +18,7 @@ import csv
 import json
 import logging
 import random
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -40,6 +41,7 @@ from models import SignalRawStatsFusion
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - [%(levelname)s] - %(message)s")
 LOG = logging.getLogger(__name__)
 IGNORE_INDEX = -100
+FIXED_REFIT_SELECTION_PROTOCOL = "fixed_epoch_refit_on_all_outer_development_sessions"
 RAW_FEATURE_NAMES = [
     "Cn0DbHz",
     "AgcDb",
@@ -561,6 +563,152 @@ def validate_checkpoint_inputs(
         raise ValueError("Checkpoint stats feature names/order differ from selected stats features")
 
 
+def _fold_component(path: Path) -> int | None:
+    folds = {
+        int(match.group(1))
+        for part in path.resolve().parts
+        for match in [re.fullmatch(r"fold_(\d+)", part)]
+        if match is not None
+    }
+    if len(folds) > 1:
+        raise ValueError(f"Path contains conflicting fold components: {path}")
+    return next(iter(folds), None)
+
+
+def _validate_fixed_refit_binding(checkpoint: dict[str, Any], raw_dir: Path) -> None:
+    """Bind a fixed-epoch refit checkpoint to its all-development train split."""
+
+    required = {"refit_epochs", "sampling", "class_weights", "session_window_counts"}
+    missing = sorted(required.difference(checkpoint))
+    if missing:
+        raise ValueError(f"Fixed-refit checkpoint lacks binding metadata: {missing}")
+    try:
+        refit_epochs = int(checkpoint["refit_epochs"])
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Fixed-refit checkpoint refit_epochs must be a positive integer") from exc
+    if refit_epochs < 1 or refit_epochs != checkpoint["refit_epochs"]:
+        raise ValueError("Fixed-refit checkpoint refit_epochs must be a positive integer")
+    sampling = str(checkpoint["sampling"])
+    if sampling not in {"window_uniform", "session_uniform"}:
+        raise ValueError(f"Unsupported fixed-refit sampling metadata: {sampling!r}")
+
+    train_path = raw_dir / "train.npz"
+    with np.load(train_path, allow_pickle=False) as train:
+        missing_arrays = {"mask", "y"}.difference(train.files)
+        if missing_arrays:
+            raise ValueError(f"{train_path} lacks refit binding arrays: {sorted(missing_arrays)}")
+        mask = np.asarray(train["mask"]).astype(bool)
+        labels = np.asarray(train["y"])
+        recording_ids = (
+            np.asarray(train["recording_id"])
+            if sampling == "session_uniform" and "recording_id" in train.files
+            else None
+        )
+    if mask.shape != labels.shape:
+        raise ValueError(f"Training mask/label shapes differ in {train_path}")
+    active_labels = labels[mask & (labels != IGNORE_INDEX)]
+    unexpected = sorted(set(np.unique(active_labels).tolist()).difference({0, 1}))
+    if unexpected:
+        raise ValueError(f"Training labels must be binary; found {unexpected}")
+    counts = np.bincount(active_labels.astype(np.int64), minlength=2)
+    if np.any(counts == 0):
+        raise ValueError(f"Fixed-refit train split must contain both classes; counts={counts.tolist()}")
+    expected_weights = counts.sum() / (2.0 * counts.astype(np.float64))
+    try:
+        recorded_weights = np.asarray(checkpoint["class_weights"], dtype=np.float64)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Fixed-refit checkpoint class_weights must be numeric") from exc
+    if recorded_weights.shape != (2,) or not np.isfinite(recorded_weights).all():
+        raise ValueError("Fixed-refit checkpoint class_weights must contain two finite values")
+    if not np.allclose(recorded_weights, expected_weights, rtol=1e-6, atol=1e-7):
+        raise ValueError(
+            "Fixed-refit checkpoint class weights differ from the selected train split: "
+            f"checkpoint={recorded_weights.tolist()}, tensors={expected_weights.tolist()}"
+        )
+
+    recorded_sessions = checkpoint["session_window_counts"]
+    if sampling == "window_uniform":
+        if recorded_sessions is not None:
+            raise ValueError("window_uniform fixed-refit checkpoint must have null session_window_counts")
+        return
+    if not isinstance(recorded_sessions, dict) or not recorded_sessions:
+        raise ValueError("session_uniform fixed-refit checkpoint lacks session_window_counts")
+    if recording_ids is None:
+        raise ValueError(f"{train_path} lacks recording_id required for session_uniform binding")
+    if recording_ids.ndim != 1 or recording_ids.shape[0] != mask.shape[0]:
+        raise ValueError(
+            f"Training recording_id must have shape [B]={mask.shape[0]}, got {recording_ids.shape}"
+        )
+    if not np.issubdtype(recording_ids.dtype, np.integer):
+        raise ValueError("Training recording_id must use an integer dtype")
+    session_ids, window_counts = np.unique(recording_ids.astype(np.int64), return_counts=True)
+    observed_sessions = {
+        str(int(session_id)): int(count)
+        for session_id, count in zip(session_ids.tolist(), window_counts.tolist())
+    }
+    try:
+        expected_sessions = {str(key): int(value) for key, value in recorded_sessions.items()}
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Fixed-refit session_window_counts must contain integer counts") from exc
+    if expected_sessions != observed_sessions:
+        raise ValueError(
+            "Fixed-refit session window counts differ from the selected train split: "
+            f"checkpoint={expected_sessions}, tensors={observed_sessions}"
+        )
+
+
+def validate_checkpoint_data_binding(
+    checkpoint: dict[str, Any], checkpoint_path: Path, data_dir: Path, raw_dir: Path
+) -> None:
+    """Reject a checkpoint selected on another fold before opening test data."""
+
+    checkpoint_fold = _fold_component(checkpoint_path)
+    data_fold = _fold_component(data_dir)
+    if checkpoint_fold is not None or data_fold is not None:
+        if checkpoint_fold != data_fold:
+            raise ValueError(
+                f"Checkpoint fold {checkpoint_fold} differs from tensor fold {data_fold}"
+            )
+
+    selection_protocol = checkpoint.get("selection_protocol")
+    if selection_protocol == FIXED_REFIT_SELECTION_PROTOCOL:
+        _validate_fixed_refit_binding(checkpoint, raw_dir)
+        return
+    if selection_protocol is not None:
+        raise ValueError(f"Unsupported checkpoint selection_protocol: {selection_protocol!r}")
+
+    recorded = checkpoint.get("val_metrics")
+    required = {"samples", "negative_support", "positive_support"}
+    if not isinstance(recorded, dict) or not required.issubset(recorded):
+        raise ValueError(
+            "Checkpoint lacks validation support metadata needed to bind it to this tensor fold"
+        )
+    val_path = raw_dir / "val.npz"
+    with np.load(val_path, allow_pickle=False) as val:
+        missing = {"mask", "y"}.difference(val.files)
+        if missing:
+            raise ValueError(f"{val_path} lacks validation binding arrays: {sorted(missing)}")
+        mask = np.asarray(val["mask"]).astype(bool)
+        labels = np.asarray(val["y"])
+    if mask.shape != labels.shape:
+        raise ValueError(f"Validation mask/label shapes differ in {val_path}")
+    active_labels = labels[mask & (labels != IGNORE_INDEX)]
+    observed = {
+        "samples": int(active_labels.size),
+        "negative_support": int((active_labels == 0).sum()),
+        "positive_support": int((active_labels == 1).sum()),
+    }
+    unexpected = sorted(set(np.unique(active_labels).tolist()).difference({0, 1}))
+    if unexpected:
+        raise ValueError(f"Validation labels must be binary; found {unexpected}")
+    expected = {key: int(recorded[key]) for key in required}
+    if observed != expected:
+        raise ValueError(
+            "Checkpoint validation support differs from the selected tensor fold: "
+            f"checkpoint={expected}, tensors={observed}"
+        )
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -614,7 +762,7 @@ def parse_args() -> argparse.Namespace:
     mode.add_argument(
         "--test-only",
         action="store_true",
-        help="Evaluate a validation-selected checkpoint on test without training.",
+        help="Evaluate a locked validation-selected or fixed-refit checkpoint without training.",
     )
     parser.add_argument(
         "--export-test-misclassifications",
@@ -685,6 +833,9 @@ def main() -> None:
         architecture = checkpoint_architecture(checkpoint)
         validate_checkpoint_inputs(
             architecture, train, raw_feature_names, stats_feature_names, "train"
+        )
+        validate_checkpoint_data_binding(
+            checkpoint, checkpoint_path, args.data_dir, raw_dir
         )
         test = load_split(
             "test", raw_dir, stats_dir, raw_feature_count, stats_feature_count,
