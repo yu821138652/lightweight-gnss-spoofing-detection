@@ -51,6 +51,50 @@ raw 输入明确不使用中央 CSV 中已有的 `Cn0DbHz_dt` 和 `Cn0DbHz_std`�
 
 四折 test 混淆矩阵合计为 `TN/FP/FN/TP = 2,210,667 / 138,512 / 130,135 / 500,599`。
 
+## Inner train/validation 划分消融：reviewed-state-stratified（2026-07-28）
+
+为验证“在每个 development Session 中分别从 clean 和 attack 时段取约 80% train、20% validation”的设想，补做了一次严格 A/B 实验。中央 CSV、target-band-only 行级标签、outer 4-fold assignment、四折 test endpoint、W5、compact11、TCN16、优化参数和 seed 均保持不变；唯一改变的是 inner train/validation 的选取方式。本实验是协议消融，未替代上面的 strict-v2 基线。
+
+具体规则与防边界泄漏约束如下：
+
+- attack 时间状态由 `configs/preprocessing.yml` 中 reviewed Session 的闭区间 TOW 定义，与行级 `Label` 和 `FreqBand` 无关；它只用于分层，不改变模型学习的正式标签语义。
+- clean 时段在每个 development Session 内约 80/20 划分；可安全拆分的长 attack run 也在本 Session 内约 80/20 划分。
+- 短 attack run 若拆分后无法在 guard 外同时留下有效 W5，则作为不可拆 atom，在同 Scenario 的 development Sessions 之间分配给 train 或 validation。因此，并非每个短 Session 的 attack 时段都强制同时进入两边。
+- 同一 canonical epoch 的全部设备、卫星和频段只能属于同一 split；每个 train/validation 边界两侧各留 4 个 guard epoch。
+
+协议审计结果：strict-v2 与新协议的 `fold_assignment.csv` 及四折 `recording_split_manifest.csv` 逐字节一致；72/72 个 development Session×fold 的 clean train/validation 均保留有效 W5；39 个可拆长 attack run 与 33 个短 attack atom 全部通过窗口约束；每个 Scenario×fold 的 attack train/validation 均有有效 W5。旧 `recording-local --strict-validation` 路径的四折关键文件哈希也保持不变。
+
+| 指标 | strict-v2 | state-stratified | 变化 |
+|---|---:|---:|---:|
+| Validation fold 等权 Macro-F1 | 0.8978 +/- 0.0097 | **0.9300 +/- 0.0138** | +0.0322 |
+| Test fold 等权 Macro-F1 | **0.8624 +/- 0.0243** | 0.8552 +/- 0.0296 | -0.0072 |
+| Overall pooled Macro-F1 | **0.8656** | 0.8588 | -0.0068 |
+| Static pooled Macro-F1 | **0.8782** | 0.8706 | -0.0076 |
+| Dynamic pooled Macro-F1 | **0.7693** | 0.7607 | -0.0086 |
+| `dy_L5` pooled Macro-F1 | 0.5647 | **0.5771** | +0.0124 |
+| Overall Session 等权 Macro-F1 | **0.7405 +/- 0.1210** | 0.7382 +/- 0.1187 | -0.0023 |
+| Dynamic Session 等权 Macro-F1 | **0.7024 +/- 0.1085** | 0.7020 +/- 0.1038 | -0.0004 |
+| `dy_L5` Session 等权 Macro-F1 | 0.5733 +/- 0.0427 | **0.5865 +/- 0.0433** | +0.0132 |
+
+新方案的 `dy_L5` Precision / Recall / FAR 为 `15.57% / 20.35% / 2.57%`，旧基线为 `13.03% / 18.67% / 2.90%`。这是方向一致但幅度很小的局部改善；四个 `dy_L5` Session 中 3 个改善、1 个退化。放到全部 24 个 test Session 后，10 个改善、13 个退化、1 个基本不变，四个 outer fold 的 Test Macro-F1 也都低于各自的 strict-v2 对照。
+
+新的 validation 明显变高而 outer test 没有提高，说明它更容易评估“同一 Session 分布内”的拟合情况，却没有增强对完整未见 Session 的选择能力。W5 guard 已排除相邻窗口跨边界重叠，但 train/validation 仍有意共享 Session、设备和环境分布；这种 domain overlap 不能当作跨 Session 泛化证据。`dy_L5` 的约 0.012--0.013 提升也不属于质变，动态整体反而下降，因此继续保留 strict-v2 为统一 mixed 基线，state-stratified 只作为可复现的诊断协议。
+
+四个 checkpoint 均在读取任何 test 前锁定：最晚 checkpoint 时间为 01:09:25，最早 test 结果时间为 01:11:24，间隔约 119 秒。本地产物为：
+
+```text
+output/protocols/mixed_timeblock_outer_cv4_w5_state_stratified_v1/
+output/tensors/mixed_timeblock_outer_cv4_w5_state_stratified_v1/
+output/training/mixed_timeblock_outer_cv4_w5_compact11_tcn16_d10_state_stratified_v1/
+```
+
+协议入口是在脚本 19 的原 mixed 命令上替换输出目录，并增加：
+
+```text
+--validation-mode reviewed-state-stratified
+--label-config configs/preprocessing.yml
+```
+
 ## 静态与动态
 
 | Test 子集 | endpoint 数 | Macro-F1 | Precision | Recall | FAR | Session 等权 Macro-F1 |

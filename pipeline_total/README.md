@@ -765,6 +765,26 @@ python pipeline_total/40_aggregate_mixed_signal_cv.py `
 
 `39` 输出逐折 overall、motion、Scenario、Session 与 device×motion×band 指标；`40` 输出 pooled、fold 等权和 Session 等权汇总。两者都只读取锁定结果，不参与模型选择或阈值调整。
 
+### 可选 inner split 消融：reviewed-state-stratified
+
+脚本 19 还提供一个诊断模式，用 reviewed TOW 区间把 development 历元分成 clean/attack 状态：clean 在每个 Session 内约 80/20，长 attack run 在本 Session 内约 80/20，无法安全拆分的短 attack run 则作为 atom 在同 Scenario 的 Sessions 之间分配。状态只用于 inner split，正式行级标签仍为原 target-band-only `Label`；同一 canonical epoch 不跨 split，W5 边界仍各留 4 个 guard epoch。
+
+```powershell
+python pipeline_total/19_generate_static_timeblock_protocol.py `
+  --csv output/processed_gnss_data.csv `
+  --source-recording-manifest output/protocols/mixed_timeblock_outer_cv4_v2/fold_assignment.csv `
+  --output-dir output/protocols/mixed_timeblock_outer_cv4_w5_state_stratified_repro_v1 `
+  --data-scope mixed `
+  --validation-mode reviewed-state-stratified `
+  --label-config configs/preprocessing.yml `
+  --time-steps 5 `
+  --block-epochs 64 `
+  --val-fraction 0.20 `
+  --segment-gap-seconds 2
+```
+
+该模式不能与 `--strict-validation` 同时使用。其四折 A/B 已完成：Validation 明显变高，但相同 outer test 的 Overall 与 Dynamic 均略降，`dy_L5` 仅小幅上升，未替代 strict-v2；完整审计与结果见 `docs/static_dynamic_signal_cv4_20260727.md`。后续张量、训练、test-only 和汇总命令与上文相同，只需统一替换协议、张量和训练目录，避免覆盖已锁定结果。
+
 ## 生成物策略
 
 协议 CSV、NPZ、checkpoint、metrics、plots 和 smoke 目录都写入 `output/`，默认可重建且不提交 Git。当前只长期保留中央 CSV、审计、标签复核证据和必要错分明细；详情见 `output/README.md`。

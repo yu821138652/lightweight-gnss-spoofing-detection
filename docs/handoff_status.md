@@ -1,8 +1,8 @@
-﻿# 项目交接状态（2026-07-27）
+﻿# 项目交接状态（2026-07-28）
 
 本文是当前工作区的唯一状态入口。它说明已经确认的数据事实、最近的探索结论、结果边界和可复现入口。历史 P0–P5 结果只用于追溯，不代表当前已经锁定的主线。
 
-## 当前状态快照（2026-07-27）
+## 当前状态快照（2026-07-28）
 
 > 本节是当前逐 `signal_id` 路线的权威状态。后续各节保留此前 7-fold 静态基线、标签敏感性和历史实验的形成过程；若数值冲突，以本节、[静态+动态统一基线](static_dynamic_signal_cv4_20260727.md) 和 [Fold 6 诊断快照](static_signal_fold6_diagnostics_20260727.md) 为准。
 
@@ -25,6 +25,7 @@
 - `dy_L5` pooled Macro-F1 仅 0.5647、Precision 13.03%、Recall 18.67%；四个 `dy_L5` Session 等权为 `0.5733 ± 0.0427`，仍是最明确的瓶颈。
 - mixed 模型在同一批静态 endpoint 上的 pooled Macro-F1 比纯静态基线高 0.0143，但静态 Session 等权低 0.0169；不同静态 Session 有升有降，不能称为稳定提升。
 - v1 试跑曾让新主楼两个重叠 `st_L5` Session 和操场两个重叠 `dy_L_15` Session 跨 outer fold，且 256-epoch 内层块使短动态 Session 严重失衡或完全缺少 validation。v2 将两对采集事件绑定为 `G08/G09`，改用 64-epoch 严格 validation；四折 raw validation 为 20.20%-20.78%，六种 Scenario 均有正负支持。
+- 2026-07-28 补做了“每个 development Session 的 clean 约 80/20、长 attack run 约 80/20、短 attack atom 按同 Scenario 跨 Session 分配”的 inner split 消融。Validation 均值从 0.8978 升至 0.9300，但相同 outer test 的 Overall / Dynamic pooled Macro-F1 分别降至 0.8588 / 0.7607；`dy_L5` 仅升至 0.5771，未形成质变，因此不替代 strict-v2。完整规则和配对结果见 [完整实验记录](static_dynamic_signal_cv4_20260727.md#inner-trainvalidation-划分消融reviewed-state-stratified2026-07-28)。
 - 协议、逐场景结果、全负动态 Session 的解释和复现入口见 [完整实验记录](static_dynamic_signal_cv4_20260727.md)。
 
 ### Fold 6 已确认事实
@@ -302,6 +303,7 @@ python pipeline_total/20_build_static_timeblock_tensors.py `
 - `training/static_timeblock_outer_v2_ablate_cn0_agc_coverage_v1/`，作为当前 10 维 stats 联合消融的 checkpoint、逐折指标和设备×频段诊断 CSV；
 - `tensors/static_timeblock_outer_v2_l5_l1_positive/`、`training/static_timeblock_outer_v2_l5_l1_positive_compact11_tcn16_d10/` 和固定旧 checkpoint 的同标签评分目录，作为一次未采纳的标签敏感性实验；结论已写入本文，后续磁盘清理时可整体删除并按需重建；
 - `protocols/mixed_timeblock_outer_cv4_v2/`、`protocols/mixed_timeblock_outer_cv4_w5_v2/`、`tensors/mixed_timeblock_outer_cv4_w5_v2/` 和 `training/mixed_timeblock_outer_cv4_w5_compact11_tcn16_d10_v2/`，作为可信统一静态+动态 4-fold 基线的可重建协议、张量、checkpoint 和汇总；v1 仅保留为发现协议问题的历史试跑，可在确认不需追溯后删除；
+- `protocols/mixed_timeblock_outer_cv4_w5_state_stratified_v1/`、`tensors/mixed_timeblock_outer_cv4_w5_state_stratified_v1/` 和 `training/mixed_timeblock_outer_cv4_w5_compact11_tcn16_d10_state_stratified_v1/`，作为未采纳的 inner split 消融；结论已写入统一基线文档，后续需要释放空间时可优先删除张量并按需重建；
 - `output/README.md`。
 
 张量、checkpoint 和训练日志仍属于可重建产物；当前 `static_timeblock_outer_v2` 只因本轮交接与新旧对照暂时保留，指标稳定写入文档后可再归档或删除。当前两套 plots 只是本轮标签复核需要。旧产物已集中迁入被 Git 忽略的 `output/_rebuildable_archive_20260722/`。此外，旧 `new_building_label_plots/` 与 `playground_label_plots/` 未自动删除，其中旧操场目录仍含已剔除 Session 的 63 张残留图，不能再作为当前数据口径使用。当前执行环境的递归删除审批服务异常，因此磁盘空间尚未真正释放；确认无需恢复后可人工删除旧目录和归档。历史指标已经压缩进本文和 P0–P5 台账。
