@@ -429,7 +429,7 @@ th { background: #edf2f5; position: sticky; top: 0; } .label { color: #b42318; f
 a { color: #075985; } p { max-width: 1050px; line-height: 1.5; }
 </style></head><body>
 <h1>GNSS Session Label Review</h1>
-<p>Each dashboard aligns all devices and all seven signal-level features for one complete Session. The red span is resolved from the current label configuration, but only intervals overlapping the recording's actual TOW range are shown. A non-zero mismatch count means the local mirrored CSV must be rebuilt before it is used for training.</p>
+<p>Each dashboard aligns all devices and all seven signal-level features for one complete Session. Blue shades denote L1 signals and red shades denote L5 signals. The gray span is resolved from the current label configuration, but only intervals overlapping the recording's actual TOW range are shown. A non-zero mismatch count means the local mirrored CSV must be rebuilt before it is used for training.</p>
 <table><thead><tr><th>Environment</th><th>Scenario</th><th>Session</th><th>Status</th><th>Source</th><th>Applicable intervals</th><th>Review priority</th><th>Devices</th><th>CSV / expected positive rows</th><th>CSV mismatch rows</th><th>Files</th></tr></thead>
 <tbody>""" + "\n".join(rows) + "</tbody></table></body></html>"
     (output_dir / "index.html").write_text(document, encoding="utf-8")
