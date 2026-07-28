@@ -36,14 +36,23 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--checkpoint", type=Path)
     parser.add_argument("--test-only", action="store_true")
+    parser.add_argument("--calibrate-only", action="store_true", help="select an alarm threshold on val.npz using an existing checkpoint")
+    parser.add_argument("--thresholds", type=float, nargs="+", default=[0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95])
+    parser.add_argument("--max-val-far", type=float, default=0.10)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
     if min(args.hidden_dim, args.epochs, args.batch_size, args.patience) < 1 or args.num_workers < 0:
         parser.error("training dimensions and counts must be positive")
     if not 0.0 <= args.dropout < 1.0:
         parser.error("dropout must be in [0, 1)")
-    if args.test_only and args.checkpoint is None:
-        parser.error("--test-only requires --checkpoint")
+    if (args.test_only or args.calibrate_only) and args.checkpoint is None:
+        parser.error("--test-only and --calibrate-only require --checkpoint")
+    if args.test_only and args.calibrate_only:
+        parser.error("--test-only and --calibrate-only are mutually exclusive")
+    if any(not 0.0 < value < 1.0 for value in args.thresholds):
+        parser.error("thresholds must be strictly between zero and one")
+    if not 0.0 <= args.max_val_far <= 1.0:
+        parser.error("max-val-far must be in [0, 1]")
     return args
 
 
@@ -106,12 +115,18 @@ def metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict[str, float | int]:
 
 
 @torch.no_grad()
-def evaluate(model: nn.Module, data: EventDataset, device: torch.device, batch_size: int, device_names: dict[int, str]) -> dict[str, Any]:
+def probabilities(model: nn.Module, data: EventDataset, device: torch.device, batch_size: int) -> np.ndarray:
     model.eval()
     batches = [model(data.x[start:start + batch_size].to(device)).cpu() for start in range(0, len(data), batch_size)]
-    predicted = torch.cat(batches).argmax(dim=1).numpy() if batches else np.empty(0, dtype=np.int64)
+    return torch.cat(batches).softmax(dim=1)[:, 1].numpy() if batches else np.empty(0, dtype=np.float64)
+
+
+def evaluate_probability(data: EventDataset, probability: np.ndarray, threshold: float, device_names: dict[int, str]) -> dict[str, Any]:
+    if len(probability) != len(data):
+        raise ValueError("Probability count differs from event windows")
+    predicted = (probability >= threshold).astype(np.int64)
     labels = data.y.numpy()
-    result: dict[str, Any] = {"overall": metrics(labels, predicted)}
+    result: dict[str, Any] = {"alarm_threshold": threshold, "overall": metrics(labels, predicted)}
     by_device: dict[str, dict[str, float | int]] = {}
     device_ids = data.device_id.numpy()
     for device_id in np.unique(device_ids):
@@ -119,6 +134,41 @@ def evaluate(model: nn.Module, data: EventDataset, device: torch.device, batch_s
         by_device[device_names.get(int(device_id), str(device_id))] = metrics(labels[selected], predicted[selected])
     result["by_device"] = by_device
     return result
+
+
+def evaluate(model: nn.Module, data: EventDataset, device: torch.device, batch_size: int, device_names: dict[int, str]) -> dict[str, Any]:
+    return evaluate_probability(data, probabilities(model, data, device, batch_size), 0.5, device_names)
+
+
+def load_checkpoint_model(checkpoint_path: Path, device: torch.device, input_dim: int) -> tuple[dict[str, Any], nn.Module]:
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    required = {"model", "input_dim", "hidden_dim", "dropout", "state_dict"}
+    if missing := required.difference(checkpoint):
+        raise ValueError(f"Invalid checkpoint; missing {sorted(missing)}")
+    if input_dim != int(checkpoint["input_dim"]):
+        raise ValueError("Checkpoint and tensor feature dimensions differ")
+    model = make_model(checkpoint["model"], int(checkpoint["input_dim"]), int(checkpoint["hidden_dim"]), float(checkpoint["dropout"])).to(device)
+    model.load_state_dict(checkpoint["state_dict"])
+    return checkpoint, model
+
+
+def calibrate_checkpoint(args: argparse.Namespace, device_names: dict[int, str], device: torch.device) -> None:
+    val = EventDataset(args.data_dir / "val.npz")
+    checkpoint, model = load_checkpoint_model(args.checkpoint, device, val.x.shape[1])
+    probability = probabilities(model, val, device, args.batch_size)
+    candidates = [evaluate_probability(val, probability, threshold, device_names) for threshold in args.thresholds]
+    eligible = [candidate for candidate in candidates if candidate["overall"]["far"] <= args.max_val_far]
+    if eligible:
+        selected = max(eligible, key=lambda candidate: (candidate["overall"]["macro_f1"], candidate["overall"]["recall"], -candidate["overall"]["far"]))
+    else:
+        selected = min(candidates, key=lambda candidate: (candidate["overall"]["far"], -candidate["overall"]["macro_f1"]))
+    checkpoint["alarm_threshold"] = float(selected["alarm_threshold"])
+    checkpoint["calibration"] = {"split": "val", "max_val_far": args.max_val_far, "metrics": selected}
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+    calibrated_path = args.output_dir / f"calibrated_{args.checkpoint.name}"
+    torch.save(checkpoint, calibrated_path)
+    save_json(args.output_dir / "val_threshold_calibration.json", {"max_val_far": args.max_val_far, "selected": selected, "candidates": candidates})
+    print(json.dumps({"checkpoint": str(calibrated_path), "selected_threshold": selected["alarm_threshold"], "val_metrics": selected["overall"]}, indent=2))
 
 
 def class_weights(data: EventDataset) -> torch.Tensor:
@@ -139,17 +189,14 @@ def main() -> None:
     device_names = {int(value): str(key) for key, value in metadata.get("device_mapping", {}).items()}
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if args.test_only:
-        checkpoint = torch.load(args.checkpoint, map_location=device, weights_only=False)
-        required = {"model", "input_dim", "hidden_dim", "dropout", "state_dict"}
-        if missing := required.difference(checkpoint):
-            raise ValueError(f"Invalid checkpoint; missing {sorted(missing)}")
         test = EventDataset(args.data_dir / "test.npz")
-        if test.x.shape[1] != int(checkpoint["input_dim"]):
-            raise ValueError("Checkpoint and test feature dimensions differ")
-        model = make_model(checkpoint["model"], int(checkpoint["input_dim"]), int(checkpoint["hidden_dim"]), float(checkpoint["dropout"])).to(device)
-        model.load_state_dict(checkpoint["state_dict"])
+        checkpoint, model = load_checkpoint_model(args.checkpoint, device, test.x.shape[1])
         args.output_dir.mkdir(parents=True, exist_ok=True)
-        save_json(args.output_dir / "test_metrics_device_event.json", evaluate(model, test, device, args.batch_size, device_names))
+        threshold = float(checkpoint.get("alarm_threshold", 0.5))
+        save_json(args.output_dir / "test_metrics_device_event.json", evaluate_probability(test, probabilities(model, test, device, args.batch_size), threshold, device_names))
+        return
+    if args.calibrate_only:
+        calibrate_checkpoint(args, device_names, device)
         return
 
     train = EventDataset(args.data_dir / "train.npz")
