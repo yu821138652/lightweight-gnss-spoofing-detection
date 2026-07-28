@@ -42,6 +42,10 @@ def parse_args() -> argparse.Namespace:
         "--initial-baseline-windows", type=int, default=0,
         help="append differences from the initial reviewed-normal device windows in each source stream",
     )
+    parser.add_argument(
+        "--initial-baseline-policy", choices=("error", "exclude_stream"), default="error",
+        help="how to handle streams whose initial baseline is unavailable because an attack starts immediately",
+    )
     parser.add_argument("--overwrite", action="store_true")
     return parser.parse_args()
 
@@ -275,6 +279,42 @@ def append_initial_baseline_deltas(
     data["x"] = np.concatenate((values, deltas.astype(np.float32)), axis=1).astype(np.float32)
     return [*names, *[f"initial_baseline_delta_{name}" for name in names]]
 
+
+def initial_baseline_eligibility(data: dict[str, np.ndarray], baseline_windows: int) -> tuple[np.ndarray, list[dict[str, int | str]]]:
+    """Identify streams that can establish a reviewed-normal initial baseline."""
+    keep = np.ones(len(data["x"]), dtype=bool)
+    excluded: list[dict[str, int | str]] = []
+    recording_ids = data["recording_id"]
+    source_ids = data["source_id"]
+    endpoint_times = data["endpoint_utc_millis"]
+    event_labels = data["y_event"]
+    groups = np.unique(np.column_stack((recording_ids, source_ids)), axis=0)
+    for recording_id, source_id in groups:
+        group = np.flatnonzero((recording_ids == recording_id) & (source_ids == source_id))
+        ordered = group[np.argsort(endpoint_times[group], kind="mergesort")]
+        prefix = ordered[:baseline_windows]
+        reason: str | None = None
+        if len(prefix) < baseline_windows:
+            reason = "insufficient_windows"
+        elif np.any(event_labels[prefix] != 0):
+            reason = "attack_in_initial_baseline"
+        if reason is not None:
+            keep[group] = False
+            excluded.append({
+                "recording_id": int(recording_id), "source_id": int(source_id), "windows": int(len(group)), "reason": reason,
+            })
+    return keep, excluded
+
+
+def filter_rows(data: dict[str, np.ndarray], keep: np.ndarray) -> None:
+    """Apply an eligibility mask consistently to every per-window tensor field."""
+    if len(keep) != len(data["x"]):
+        raise ValueError("Eligibility mask length differs from device windows")
+    for key, values in data.items():
+        if len(values) != len(keep):
+            raise ValueError(f"Field {key!r} has inconsistent device-window length")
+        data[key] = values[keep]
+
 def append_device_one_hot(data: dict[str, np.ndarray], device_count: int) -> list[str]:
     """Append a receiver identity indicator after causal feature construction."""
     device_ids = data["device_id"].astype(np.int64)
@@ -340,6 +380,20 @@ def main() -> None:
         elif causal_names != candidate_names:
             raise RuntimeError("Causal device feature contract differs between splits")
     feature_names = causal_names or feature_names
+    initial_baseline_exclusions: dict[str, list[dict[str, int | str]]] = {split: [] for split in SPLITS}
+    if args.initial_baseline_windows:
+        for split, data in datasets.items():
+            keep, excluded = initial_baseline_eligibility(data, args.initial_baseline_windows)
+            initial_baseline_exclusions[split] = excluded
+            if excluded and args.initial_baseline_policy == "error":
+                first = excluded[0]
+                raise ValueError(
+                    "Initial baseline is unavailable for "
+                    f"source ({first['recording_id']}, {first['source_id']}) because {first['reason']}; "
+                    "choose --initial-baseline-policy exclude_stream or a different protocol"
+                )
+            if excluded:
+                filter_rows(data, keep)
     baseline_names: list[str] | None = None
     for data in datasets.values():
         candidate_names = append_initial_baseline_deltas(data, feature_names, args.initial_baseline_windows)
@@ -376,6 +430,8 @@ def main() -> None:
         "feature_set": args.feature_set,
         "causal_reference_windows": args.causal_reference_windows,
         "initial_baseline_windows": args.initial_baseline_windows,
+        "initial_baseline_policy": args.initial_baseline_policy,
+        "initial_baseline_exclusions": initial_baseline_exclusions,
         "feature_names": feature_names,
         "device_mapping": read_json(args.signal_data_dir / "device_mapping.json"),
         "recordings": trace["recordings"],
