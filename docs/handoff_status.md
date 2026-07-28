@@ -108,6 +108,20 @@
 4. 完成 E12a 的内层静态 Session 选择和固定 epoch refit，再以一次显式 `--test-only` 做诊断。不要把动态增广后的结果与纯静态 7-fold 基线直接排序。
 5. 若设备级模型继续保守，优先评估设备条件化或校准方案；但必须同时保留卫星级“直接欺骗”和“攻击关联异常”的语义边界。
 
+#### 2026-07-28：完整 Session 留一验证启动
+
+此前设备事件线性基线的时间块 val 为 `0.9673`，但该 val 与同一批开发 Session 的训练块高度相关，不能用于选择结论。本轮将开发集的 6 个完整静态 Session 依次作为 validation，且固定操场长 `st_L5` 继续作为 outer test。
+
+第一折 `inner_01` 留出新主楼 `st_L1/2025.07.29.19.22_新主楼`，其重新构建后的信号窗口为 train `36,060`、val `7,451`、test `8,181`；设备事件窗口和信号窗口一一对应。线性模型最多训练 50 epoch、patience=8，在 epoch 10 锁定 checkpoint，结果为：
+
+| 指标 | inner_01 val | 固定 checkpoint 的 Fold 6 outer test |
+|---|---:|---:|
+| Macro-F1 | 0.8134 | 0.5591 |
+| Recall | 未单独作为选择指标 | 23.60% |
+| Precision | 未单独作为选择指标 | 96.22% |
+| FAR | 未单独作为选择指标 | 0.84% |
+
+outer test 的逐设备 Recall 为 Pixel 6 `7.52%`、Pixel Watch 1 `15.57%`、Pixel Watch 2 `1.61%`、Mate40 `66.71%`、RedMi K60 `6.34%`、MI8 `75.29%`。这说明：即使改为完整 Session validation，单一留出 Session 仍不能代表目标操场 L5 的设备分布；模型依旧极度保守。该 outer test 已用于诊断，不能以此结果回调超参数。下一步是完成其余 5 个 inner folds，并按中位数、最差设备 Recall 与 Mate40 FAR 共同选择候选方案。
 #### 本轮 Git 提交
 
 - `da6a08a 修复(静态张量): 补全可选特征与标签接口`
