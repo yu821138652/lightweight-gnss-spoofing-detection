@@ -32,7 +32,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--label-config", type=Path, default=ROOT / "configs" / "preprocessing.yml")
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument(
-        "--feature-set", choices=("all", "l1_only", "l5_only", "no_cross", "causal_delta_only", "causal_delta_with_device", "initial_baseline_delta_only"), default="all",
+        "--feature-set", choices=("all", "l1_only", "l5_only", "no_cross", "causal_delta_only", "causal_delta_with_device", "initial_baseline_delta_only", "initial_baseline_delta_with_device"), default="all",
     )
     parser.add_argument(
         "--causal-reference-windows", type=int, default=0,
@@ -159,6 +159,8 @@ def select_feature_indices(names: list[str], feature_set: str) -> list[int]:
         selected = [name for name in names if name.startswith("causal_delta_")]
     elif feature_set == "initial_baseline_delta_only":
         selected = [name for name in names if name.startswith("initial_baseline_delta_")]
+    elif feature_set == "initial_baseline_delta_with_device":
+        selected = [name for name in names if name.startswith("initial_baseline_delta_") or name.startswith("device_is_")]
     else:
         selected = [name for name in names if name.startswith("causal_delta_") or name.startswith("device_is_")]
     if not selected:
@@ -345,8 +347,8 @@ def main() -> None:
     args = parse_args()
     if args.causal_reference_windows < 0 or args.initial_baseline_windows < 0:
         raise ValueError("reference window counts must be non-negative")
-    if args.feature_set == "initial_baseline_delta_only" and args.initial_baseline_windows == 0:
-        raise ValueError("initial_baseline_delta_only requires --initial-baseline-windows")
+    if args.feature_set in ("initial_baseline_delta_only", "initial_baseline_delta_with_device") and args.initial_baseline_windows == 0:
+        raise ValueError("initial baseline feature sets require --initial-baseline-windows")
     if args.output_dir.exists() and any(args.output_dir.iterdir()) and not args.overwrite:
         raise FileExistsError(f"Output directory is not empty: {args.output_dir}")
     names = read_json(args.signal_data_dir / "stats" / "feature_names.json")
@@ -402,7 +404,7 @@ def main() -> None:
         elif baseline_names != candidate_names:
             raise RuntimeError("Initial baseline feature contract differs between splits")
     feature_names = baseline_names or feature_names
-    if args.feature_set == "causal_delta_with_device":
+    if args.feature_set in ("causal_delta_with_device", "initial_baseline_delta_with_device"):
         device_count = max(int(data["device_id"].max()) for data in datasets.values() if len(data["device_id"])) + 1
         device_names: list[str] | None = None
         for data in datasets.values():
