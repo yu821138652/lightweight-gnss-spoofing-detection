@@ -32,11 +32,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--label-config", type=Path, default=ROOT / "configs" / "preprocessing.yml")
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument(
-        "--feature-set", choices=("all", "l1_only", "l5_only", "no_cross", "causal_delta_only", "causal_delta_with_device"), default="all",
+        "--feature-set", choices=("all", "l1_only", "l5_only", "no_cross", "causal_delta_only", "causal_delta_with_device", "initial_baseline_delta_only"), default="all",
     )
     parser.add_argument(
         "--causal-reference-windows", type=int, default=0,
         help="append within-source differences from preceding device windows",
+    )
+    parser.add_argument(
+        "--initial-baseline-windows", type=int, default=0,
+        help="append differences from the initial reviewed-normal device windows in each source stream",
     )
     parser.add_argument("--overwrite", action="store_true")
     return parser.parse_args()
@@ -149,6 +153,8 @@ def select_feature_indices(names: list[str], feature_set: str) -> list[int]:
         selected = [name for name in names if not name.startswith("l5_minus_") and name != "coupled_l5_up_plus_l1_down_ratio"]
     elif feature_set == "causal_delta_only":
         selected = [name for name in names if name.startswith("causal_delta_")]
+    elif feature_set == "initial_baseline_delta_only":
+        selected = [name for name in names if name.startswith("initial_baseline_delta_")]
     else:
         selected = [name for name in names if name.startswith("causal_delta_") or name.startswith("device_is_")]
     if not selected:
@@ -224,6 +230,51 @@ def append_causal_device_deltas(
     data["x"] = np.concatenate((values, deltas.astype(np.float32)), axis=1).astype(np.float32)
     return [*names, *[f"causal_delta_{name}" for name in names]]
 
+
+def append_initial_baseline_deltas(
+    data: dict[str, np.ndarray], names: list[str], baseline_windows: int,
+) -> list[str]:
+    """Append source-local differences from a verified normal session prefix.
+
+    A rolling reference eventually adapts to a sustained attack.  This feature
+    keeps the reference fixed at the session prefix, which is valid only when
+    that prefix is independently reviewed as normal.  The labels are used
+    exclusively for this data-contract check, never to calculate the values.
+    """
+    if baseline_windows == 0:
+        return names
+    values = data["x"].astype(np.float64, copy=False)
+    deltas = np.full_like(values, np.nan, dtype=np.float64)
+    recording_ids = data["recording_id"]
+    source_ids = data["source_id"]
+    endpoint_times = data["endpoint_utc_millis"]
+    event_labels = data["y_event"]
+    groups = np.unique(np.column_stack((recording_ids, source_ids)), axis=0)
+    for recording_id, source_id in groups:
+        group = np.flatnonzero((recording_ids == recording_id) & (source_ids == source_id))
+        ordered = group[np.argsort(endpoint_times[group], kind="mergesort")]
+        prefix = ordered[:baseline_windows]
+        if len(prefix) < baseline_windows:
+            raise ValueError(
+                f"Source {(int(recording_id), int(source_id))} has only {len(prefix)} windows; "
+                f"cannot construct a {baseline_windows}-window initial baseline"
+            )
+        if np.any(event_labels[prefix] != 0):
+            raise ValueError(
+                f"Initial baseline overlaps a reviewed attack for source {(int(recording_id), int(source_id))}; "
+                "choose fewer baseline windows or a different protocol"
+            )
+        reference_values = values[prefix]
+        finite = np.isfinite(reference_values)
+        count = finite.sum(axis=0)
+        reference = np.divide(
+            np.where(finite, reference_values, 0.0).sum(axis=0), count,
+            out=np.full(values.shape[1], np.nan, dtype=np.float64), where=count > 0,
+        )
+        deltas[ordered] = values[ordered] - reference
+    data["x"] = np.concatenate((values, deltas.astype(np.float32)), axis=1).astype(np.float32)
+    return [*names, *[f"initial_baseline_delta_{name}" for name in names]]
+
 def append_device_one_hot(data: dict[str, np.ndarray], device_count: int) -> list[str]:
     """Append a receiver identity indicator after causal feature construction."""
     device_ids = data["device_id"].astype(np.int64)
@@ -252,8 +303,10 @@ def scale_train_only(datasets: dict[str, dict[str, np.ndarray]]) -> dict[str, li
 
 def main() -> None:
     args = parse_args()
-    if args.causal_reference_windows < 0:
-        raise ValueError("--causal-reference-windows must be non-negative")
+    if args.causal_reference_windows < 0 or args.initial_baseline_windows < 0:
+        raise ValueError("reference window counts must be non-negative")
+    if args.feature_set == "initial_baseline_delta_only" and args.initial_baseline_windows == 0:
+        raise ValueError("initial_baseline_delta_only requires --initial-baseline-windows")
     if args.output_dir.exists() and any(args.output_dir.iterdir()) and not args.overwrite:
         raise FileExistsError(f"Output directory is not empty: {args.output_dir}")
     names = read_json(args.signal_data_dir / "stats" / "feature_names.json")
@@ -287,6 +340,14 @@ def main() -> None:
         elif causal_names != candidate_names:
             raise RuntimeError("Causal device feature contract differs between splits")
     feature_names = causal_names or feature_names
+    baseline_names: list[str] | None = None
+    for data in datasets.values():
+        candidate_names = append_initial_baseline_deltas(data, feature_names, args.initial_baseline_windows)
+        if baseline_names is None:
+            baseline_names = candidate_names
+        elif baseline_names != candidate_names:
+            raise RuntimeError("Initial baseline feature contract differs between splits")
+    feature_names = baseline_names or feature_names
     if args.feature_set == "causal_delta_with_device":
         device_count = max(int(data["device_id"].max()) for data in datasets.values() if len(data["device_id"])) + 1
         device_names: list[str] | None = None
@@ -314,6 +375,7 @@ def main() -> None:
         "label_config": str(args.label_config),
         "feature_set": args.feature_set,
         "causal_reference_windows": args.causal_reference_windows,
+        "initial_baseline_windows": args.initial_baseline_windows,
         "feature_names": feature_names,
         "device_mapping": read_json(args.signal_data_dir / "device_mapping.json"),
         "recordings": trace["recordings"],
