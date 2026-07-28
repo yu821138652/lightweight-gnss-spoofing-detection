@@ -31,7 +31,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--signal-data-dir", type=Path, required=True)
     parser.add_argument("--label-config", type=Path, default=ROOT / "configs" / "preprocessing.yml")
     parser.add_argument("--output-dir", type=Path, required=True)
-    parser.add_argument("--feature-set", choices=("all", "l1_only", "l5_only", "no_cross"), default="all")
+    parser.add_argument(
+        "--feature-set", choices=("all", "l1_only", "l5_only", "no_cross", "causal_delta_only"), default="all",
+    )
+    parser.add_argument(
+        "--causal-reference-windows", type=int, default=0,
+        help="append within-source differences from preceding device windows",
+    )
     parser.add_argument("--overwrite", action="store_true")
     return parser.parse_args()
 
@@ -139,8 +145,10 @@ def select_feature_indices(names: list[str], feature_set: str) -> list[int]:
         selected = [name for name in names if name.startswith("l1_")]
     elif feature_set == "l5_only":
         selected = [name for name in names if name.startswith("l5_")]
-    else:
+    elif feature_set == "no_cross":
         selected = [name for name in names if not name.startswith("l5_minus_") and name != "coupled_l5_up_plus_l1_down_ratio"]
+    else:
+        selected = [name for name in names if name.startswith("causal_delta_")]
     if not selected:
         raise ValueError(f"Feature set {feature_set!r} selected no device features")
     return [names.index(name) for name in selected]
@@ -183,6 +191,37 @@ def load_device_split(signal_dir: Path, split: str, index: dict[str, int], inter
         }, names or []
 
 
+def append_causal_device_deltas(
+    data: dict[str, np.ndarray], names: list[str], history_windows: int,
+) -> list[str]:
+    """Append source-local differences against preceding device endpoints only."""
+    if history_windows == 0:
+        return names
+    values = data["x"].astype(np.float64, copy=False)
+    deltas = np.full_like(values, np.nan, dtype=np.float64)
+    recording_ids = data["recording_id"]
+    source_ids = data["source_id"]
+    endpoint_times = data["endpoint_utc_millis"]
+    groups = np.unique(np.column_stack((recording_ids, source_ids)), axis=0)
+    for recording_id, source_id in groups:
+        group = np.flatnonzero((recording_ids == recording_id) & (source_ids == source_id))
+        ordered = group[np.argsort(endpoint_times[group], kind="mergesort")]
+        group_values = values[ordered]
+        finite = np.isfinite(group_values)
+        filled = np.where(finite, group_values, 0.0)
+        cumulative_sum = np.vstack((np.zeros((1, values.shape[1])), np.cumsum(filled, axis=0)))
+        cumulative_count = np.vstack((np.zeros((1, values.shape[1])), np.cumsum(finite, axis=0)))
+        endpoint = np.arange(len(ordered))
+        start = np.maximum(0, endpoint - history_windows)
+        history_sum = cumulative_sum[endpoint] - cumulative_sum[start]
+        history_count = cumulative_count[endpoint] - cumulative_count[start]
+        reference = np.divide(history_sum, history_count, out=np.zeros_like(history_sum), where=history_count > 0)
+        group_delta = group_values - reference
+        group_delta[history_count == 0] = np.nan
+        deltas[ordered] = group_delta
+    data["x"] = np.concatenate((values, deltas.astype(np.float32)), axis=1).astype(np.float32)
+    return [*names, *[f"causal_delta_{name}" for name in names]]
+
 def scale_train_only(datasets: dict[str, dict[str, np.ndarray]]) -> dict[str, list[float]]:
     train_x = datasets["train"]["x"]
     if len(train_x) == 0:
@@ -201,6 +240,8 @@ def scale_train_only(datasets: dict[str, dict[str, np.ndarray]]) -> dict[str, li
 
 def main() -> None:
     args = parse_args()
+    if args.causal_reference_windows < 0:
+        raise ValueError("--causal-reference-windows must be non-negative")
     if args.output_dir.exists() and any(args.output_dir.iterdir()) and not args.overwrite:
         raise FileExistsError(f"Output directory is not empty: {args.output_dir}")
     names = read_json(args.signal_data_dir / "stats" / "feature_names.json")
@@ -226,6 +267,14 @@ def main() -> None:
     for data in datasets.values():
         if len(data["x"]) == 0:
             data["x"] = np.empty((0, len(feature_names)), dtype=np.float32)
+    causal_names: list[str] | None = None
+    for data in datasets.values():
+        candidate_names = append_causal_device_deltas(data, feature_names, args.causal_reference_windows)
+        if causal_names is None:
+            causal_names = candidate_names
+        elif causal_names != candidate_names:
+            raise RuntimeError("Causal device feature contract differs between splits")
+    feature_names = causal_names or feature_names
     selected_indices = select_feature_indices(feature_names, args.feature_set)
     feature_names = [feature_names[index] for index in selected_indices]
     for data in datasets.values():
@@ -242,6 +291,7 @@ def main() -> None:
         "signal_data_dir": str(args.signal_data_dir),
         "label_config": str(args.label_config),
         "feature_set": args.feature_set,
+        "causal_reference_windows": args.causal_reference_windows,
         "feature_names": feature_names,
         "device_mapping": read_json(args.signal_data_dir / "device_mapping.json"),
         "recordings": trace["recordings"],
