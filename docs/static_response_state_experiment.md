@@ -57,17 +57,20 @@ better: keep the flat three-class model as the base prediction, then use a
 binary direct-spoof expert only as an override when its direct probability is
 high.
 
-The current best pilot uses `direct_threshold=0.3` and `override_scope=all`.
+The current best pilot uses validation-calibrated direct thresholds with
+`override_scope=all`.  The threshold is selected on validation under
+`max_val_far=0.05` and `min_val_abnormal_recall=0.90`, then applied once to
+the outer test.
 
 | fold | outer scenario | Macro-F1 | FAR | abnormal recall | anomaly recall | direct recall |
 |---|---|---:|---:|---:|---:|---:|
-| fold_6 | st_L5 | 0.8445 | 2.83% | 91.51% | 97.52% | 63.22% |
-| fold_7 | st_L1+L5 | 0.6588 | 0.22% | 97.19% | n/a | 97.19% |
+| fold_6 | st_L5 | 0.8529 | 2.85% | 91.73% | 97.52% | 65.36% |
+| fold_7 | st_L1+L5 | 0.6593 | 0.28% | 97.51% | n/a | 97.51% |
 
 Compared with the flat three-class pilot, the direct override improves fold-6
-direct recall from 47.06% to 63.22% without increasing FAR.  Fold 7 is
-unchanged.  Across the two locally available folds, mean direct recall rises
-from 72.13% to 80.21%, while mean FAR remains 1.52%.
+direct recall from 47.06% to 65.36% with almost unchanged FAR.  Fold 7 is not
+hurt.  Across the two locally available folds, mean direct recall rises from
+72.13% to 81.43%, while mean FAR remains low at 1.57%.
 
 This supports the next full experiment design:
 
@@ -124,9 +127,13 @@ python pipeline_total/37_train_device_attack_event.py `
 
 python pipeline_total/42_eval_response_state_direct_override.py `
   --data-dir output/tensors/static_response_state_v1/fold_6/device_tensors_sparse_initial30_device `
-  --output-dir output/hierarchical_event_v1/static_response_state_v1/fold_6/direct_override_mlp_h32_t030_all `
+  --output-dir output/hierarchical_event_v1/static_response_state_v1/fold_6/direct_override_mlp_h32_valcal_all `
   --split test `
   --flat-checkpoint output/hierarchical_event_v1/static_response_state_v1/fold_6/mlp_sparse_initial30_device_h32/best_device_event_mlp.pt `
   --direct-checkpoint output/hierarchical_event_v1/static_response_state_v1/fold_6/direct_expert_mlp_h32/best_device_event_mlp.pt `
-  --direct-threshold 0.3 --override-scope all
+  --calibrate-threshold-on-val `
+  --thresholds 0.05 0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8 0.9 0.95 `
+  --max-val-far 0.05 `
+  --min-val-abnormal-recall 0.90 `
+  --override-scope all
 ```
