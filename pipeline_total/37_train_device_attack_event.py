@@ -183,7 +183,56 @@ def probabilities(model: nn.Module, data: EventDataset, device: torch.device, ba
     return torch.cat(batches).softmax(dim=1).numpy() if batches else np.empty((0, 0), dtype=np.float64)
 
 
-def evaluate_probability(data: EventDataset, probability: np.ndarray, threshold: float | None, device_names: dict[int, str], num_classes: int) -> dict[str, Any]:
+def group_metrics(
+    labels: np.ndarray,
+    predicted: np.ndarray,
+    keys: np.ndarray,
+    names: dict[int, str] | None,
+    num_classes: int,
+) -> dict[str, dict[str, Any]]:
+    result: dict[str, dict[str, Any]] = {}
+    for key in np.unique(keys):
+        selected = keys == key
+        name = names.get(int(key), str(int(key))) if names is not None else str(key)
+        result[name] = multiclass_metrics(labels[selected], predicted[selected], num_classes)
+    return result
+
+
+def recording_names(metadata: dict[str, Any]) -> dict[int, str]:
+    rows = metadata.get("recordings", [])
+    if not isinstance(rows, list):
+        return {}
+    result: dict[int, str] = {}
+    for recording_id, row in enumerate(rows):
+        if isinstance(row, dict):
+            result[recording_id] = "/".join(str(row.get(key, "")) for key in ("Environment", "Scenario", "Session"))
+    return result
+
+
+def scenario_ids(metadata: dict[str, Any], recording_ids: np.ndarray) -> tuple[np.ndarray, dict[int, str]]:
+    rows = metadata.get("recordings", [])
+    scenario_to_id: dict[str, int] = {}
+    names: dict[int, str] = {}
+    mapped = np.zeros(len(recording_ids), dtype=np.int64)
+    for index, recording_id in enumerate(recording_ids.astype(np.int64)):
+        scenario = "unknown"
+        if isinstance(rows, list) and 0 <= int(recording_id) < len(rows) and isinstance(rows[int(recording_id)], dict):
+            scenario = str(rows[int(recording_id)].get("Scenario", "unknown"))
+        if scenario not in scenario_to_id:
+            scenario_to_id[scenario] = len(scenario_to_id)
+            names[scenario_to_id[scenario]] = scenario
+        mapped[index] = scenario_to_id[scenario]
+    return mapped, names
+
+
+def evaluate_probability(
+    data: EventDataset,
+    probability: np.ndarray,
+    threshold: float | None,
+    device_names: dict[int, str],
+    num_classes: int,
+    metadata: dict[str, Any],
+) -> dict[str, Any]:
     if len(probability) != len(data):
         raise ValueError("Probability count differs from event windows")
     if probability.ndim != 2 or probability.shape[1] != num_classes:
@@ -194,18 +243,18 @@ def evaluate_probability(data: EventDataset, probability: np.ndarray, threshold:
         predicted = probability.argmax(axis=1).astype(np.int64)
     labels = data.y.numpy()
     result: dict[str, Any] = {"alarm_threshold": threshold, "overall": multiclass_metrics(labels, predicted, num_classes)}
-    by_device: dict[str, dict[str, float | int]] = {}
     device_ids = data.device_id.numpy()
-    for device_id in np.unique(device_ids):
-        selected = device_ids == device_id
-        by_device[device_names.get(int(device_id), str(device_id))] = multiclass_metrics(labels[selected], predicted[selected], num_classes)
-    result["by_device"] = by_device
+    recording_ids = data.recording_id.numpy()
+    scenario_key, scenario_names = scenario_ids(metadata, recording_ids)
+    result["by_device"] = group_metrics(labels, predicted, device_ids, device_names, num_classes)
+    result["by_scenario"] = group_metrics(labels, predicted, scenario_key, scenario_names, num_classes)
+    result["by_recording"] = group_metrics(labels, predicted, recording_ids, recording_names(metadata), num_classes)
     return result
 
 
-def evaluate(model: nn.Module, data: EventDataset, device: torch.device, batch_size: int, device_names: dict[int, str], num_classes: int) -> dict[str, Any]:
+def evaluate(model: nn.Module, data: EventDataset, device: torch.device, batch_size: int, device_names: dict[int, str], num_classes: int, metadata: dict[str, Any]) -> dict[str, Any]:
     threshold = 0.5 if num_classes == 2 else None
-    return evaluate_probability(data, probabilities(model, data, device, batch_size), threshold, device_names, num_classes)
+    return evaluate_probability(data, probabilities(model, data, device, batch_size), threshold, device_names, num_classes, metadata)
 
 
 def load_checkpoint_model(checkpoint_path: Path, device: torch.device, input_dim: int) -> tuple[dict[str, Any], nn.Module]:
@@ -230,7 +279,8 @@ def calibrate_checkpoint(args: argparse.Namespace, device_names: dict[int, str],
     if int(checkpoint.get("num_classes", 2)) != 2:
         raise ValueError("--calibrate-only currently applies only to binary checkpoints")
     probability = probabilities(model, val, device, args.batch_size)
-    candidates = [evaluate_probability(val, probability, threshold, device_names, 2) for threshold in args.thresholds]
+    metadata = json.loads((args.data_dir / "metadata.json").read_text(encoding="utf-8"))
+    candidates = [evaluate_probability(val, probability, threshold, device_names, 2, metadata) for threshold in args.thresholds]
     eligible = [candidate for candidate in candidates if candidate["overall"]["far"] <= args.max_val_far]
     if eligible:
         selected = max(eligible, key=lambda candidate: (candidate["overall"]["macro_f1"], candidate["overall"]["recall"], -candidate["overall"]["far"]))
@@ -275,7 +325,7 @@ def main() -> None:
         args.output_dir.mkdir(parents=True, exist_ok=True)
         num_classes = int(checkpoint.get("num_classes", 2))
         threshold = float(checkpoint.get("alarm_threshold", 0.5)) if num_classes == 2 else None
-        save_json(args.output_dir / "test_metrics_device_event.json", evaluate_probability(test, probabilities(model, test, device, args.batch_size), threshold, device_names, num_classes))
+        save_json(args.output_dir / "test_metrics_device_event.json", evaluate_probability(test, probabilities(model, test, device, args.batch_size), threshold, device_names, num_classes, metadata))
         return
     if args.calibrate_only:
         calibrate_checkpoint(args, device_names, device, include_device_ids)
@@ -304,7 +354,7 @@ def main() -> None:
             loss.backward()
             optimizer.step()
             total_loss += float(loss.item()) * len(y)
-        val_metrics = evaluate(model, val, device, args.batch_size, device_names, num_classes)["overall"]
+        val_metrics = evaluate(model, val, device, args.batch_size, device_names, num_classes, metadata)["overall"]
         row = {"epoch": epoch, "train_loss": total_loss / len(train), **val_metrics}
         history.append(row)
         score = float(val_metrics["macro_f1"])
@@ -328,7 +378,7 @@ def main() -> None:
     }, checkpoint_path)
     save_json(args.output_dir / "training_history.json", history)
     model.load_state_dict(best_state)
-    save_json(args.output_dir / "val_metrics_device_event.json", evaluate(model, val, device, args.batch_size, device_names, num_classes))
+    save_json(args.output_dir / "val_metrics_device_event.json", evaluate(model, val, device, args.batch_size, device_names, num_classes, metadata))
     print(json.dumps({"checkpoint": str(checkpoint_path), "best_val_macro_f1": best_score, "epochs": len(history)}, indent=2))
 
 
