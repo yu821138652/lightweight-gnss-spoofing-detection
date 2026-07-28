@@ -32,6 +32,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--label-config", type=Path, default=ROOT / "configs" / "preprocessing.yml")
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument(
+        "--device-aggregate-profile", choices=("robust", "sparse_extreme"), default="robust",
+        help="signal-to-device aggregation; sparse_extreme retains rare strong cross-band changes",
+    )
+    parser.add_argument(
         "--feature-set", choices=("all", "l1_only", "l5_only", "no_cross", "causal_delta_only", "causal_delta_with_device", "initial_baseline_delta_only", "initial_baseline_delta_with_device"), default="all",
     )
     parser.add_argument(
@@ -72,17 +76,21 @@ def reduce(values: np.ndarray, kind: str) -> float:
         return float(np.mean(values < 0.0))
     if kind == "coverage_loss_ratio":
         return float(np.mean(values < 0.999))
+    if kind == "top3_mean":
+        return float(np.mean(np.sort(values)[-min(3, len(values)):]))
+    if kind == "bottom3_mean":
+        return float(np.mean(np.sort(values)[:min(3, len(values))]))
     raise ValueError(f"Unsupported reduction: {kind}")
 
 
-def aggregate_window(stats: np.ndarray, mask: np.ndarray, index: dict[str, int]) -> tuple[np.ndarray, list[str]]:
+def aggregate_window(stats: np.ndarray, mask: np.ndarray, index: dict[str, int], profile: str) -> tuple[np.ndarray, list[str]]:
     """Summarize all valid L1/L5 signal endpoints at one device time."""
     if stats.ndim != 3 or stats.shape[1] != 1:
         raise ValueError(f"Expected [signals, 1, features], received {stats.shape}")
     values = stats[:, 0, :]
     active = np.asarray(mask, dtype=bool)
     is_l5 = values[:, index["IsL5"]] >= 0.5
-    definitions = (
+    definitions: list[tuple[str, str, tuple[str, ...]]] = [
         ("Cn0DbHzLastW5", "cn0_last", ("median", "q25", "q75")),
         ("Cn0DbHzSlopeW5", "cn0_slope", ("median", "positive_ratio", "negative_ratio")),
         ("AgcDbLastW5", "agc_last", ("median",)),
@@ -90,7 +98,10 @@ def aggregate_window(stats: np.ndarray, mask: np.ndarray, index: dict[str, int])
         ("ReceivedSvTimeUncertaintyNanosStdW5", "rx_time_unc_std", ("median",)),
         ("SignalHistoryRatioW5", "history", ("median", "coverage_loss_ratio")),
         ("AgcObservedRatioW5", "agc_observed", ("median", "coverage_loss_ratio")),
-    )
+    ]
+    if profile == "sparse_extreme":
+        definitions[0] = ("Cn0DbHzLastW5", "cn0_last", ("median", "q25", "q75", "top3_mean", "bottom3_mean"))
+        definitions[1] = ("Cn0DbHzSlopeW5", "cn0_slope", ("median", "positive_ratio", "negative_ratio", "top3_mean", "bottom3_mean"))
     result: list[float] = []
     names: list[str] = []
     summaries: dict[int, dict[str, float]] = {}
@@ -108,11 +119,17 @@ def aggregate_window(stats: np.ndarray, mask: np.ndarray, index: dict[str, int])
                 names.append(f"{prefix}_{key}")
                 summary[key] = value
         summaries[band] = summary
-    for key in ("cn0_last_median", "cn0_slope_median", "agc_last_median", "history_median"):
+    cross_keys = ["cn0_last_median", "cn0_slope_median", "agc_last_median", "history_median"]
+    if profile == "sparse_extreme":
+        cross_keys.extend(("cn0_last_top3_mean", "cn0_slope_top3_mean", "cn0_slope_bottom3_mean"))
+    for key in cross_keys:
         result.append(summaries[5][key] - summaries[1][key])
         names.append(f"l5_minus_l1_{key}")
     result.append(summaries[5]["cn0_slope_positive_ratio"] + summaries[1]["cn0_slope_negative_ratio"])
     names.append("coupled_l5_up_plus_l1_down_ratio")
+    if profile == "sparse_extreme":
+        result.append(summaries[5]["cn0_slope_top3_mean"] - summaries[1]["cn0_slope_bottom3_mean"])
+        names.append("coupled_l5_top3_up_minus_l1_bottom3_down")
     return np.asarray(result, dtype=np.float32), names
 
 
@@ -168,7 +185,7 @@ def select_feature_indices(names: list[str], feature_set: str) -> list[int]:
     return [names.index(name) for name in selected]
 
 
-def load_device_split(signal_dir: Path, split: str, index: dict[str, int], intervals: dict[int, list[tuple[float, float]]]) -> tuple[dict[str, np.ndarray], list[str]]:
+def load_device_split(signal_dir: Path, split: str, index: dict[str, int], intervals: dict[int, list[tuple[float, float]]], profile: str) -> tuple[dict[str, np.ndarray], list[str]]:
     raw_path = signal_dir / "raw" / f"{split}.npz"
     stats_path = signal_dir / "stats" / f"{split}.npz"
     with np.load(raw_path, allow_pickle=False) as raw, np.load(stats_path, allow_pickle=False) as stats:
@@ -182,7 +199,7 @@ def load_device_split(signal_dir: Path, split: str, index: dict[str, int], inter
         rows: list[np.ndarray] = []
         names: list[str] | None = None
         for row_stats, row_mask in zip(stats["x"], raw["mask"]):
-            features, feature_names = aggregate_window(row_stats, row_mask, index)
+            features, feature_names = aggregate_window(row_stats, row_mask, index, profile)
             if names is None:
                 names = feature_names
             elif names != feature_names:
@@ -363,7 +380,7 @@ def main() -> None:
     datasets: dict[str, dict[str, np.ndarray]] = {}
     feature_names: list[str] | None = None
     for split in SPLITS:
-        data, candidate_names = load_device_split(args.signal_data_dir, split, index, intervals)
+        data, candidate_names = load_device_split(args.signal_data_dir, split, index, intervals, args.device_aggregate_profile)
         if feature_names is None and candidate_names:
             feature_names = candidate_names
         elif candidate_names and feature_names != candidate_names:
@@ -430,6 +447,7 @@ def main() -> None:
         "signal_data_dir": str(args.signal_data_dir),
         "label_config": str(args.label_config),
         "feature_set": args.feature_set,
+        "device_aggregate_profile": args.device_aggregate_profile,
         "causal_reference_windows": args.causal_reference_windows,
         "initial_baseline_windows": args.initial_baseline_windows,
         "initial_baseline_policy": args.initial_baseline_policy,
