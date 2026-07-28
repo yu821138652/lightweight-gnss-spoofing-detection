@@ -32,7 +32,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--label-config", type=Path, default=ROOT / "configs" / "preprocessing.yml")
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument(
-        "--feature-set", choices=("all", "l1_only", "l5_only", "no_cross", "causal_delta_only"), default="all",
+        "--feature-set", choices=("all", "l1_only", "l5_only", "no_cross", "causal_delta_only", "causal_delta_with_device"), default="all",
     )
     parser.add_argument(
         "--causal-reference-windows", type=int, default=0,
@@ -147,8 +147,10 @@ def select_feature_indices(names: list[str], feature_set: str) -> list[int]:
         selected = [name for name in names if name.startswith("l5_")]
     elif feature_set == "no_cross":
         selected = [name for name in names if not name.startswith("l5_minus_") and name != "coupled_l5_up_plus_l1_down_ratio"]
-    else:
+    elif feature_set == "causal_delta_only":
         selected = [name for name in names if name.startswith("causal_delta_")]
+    else:
+        selected = [name for name in names if name.startswith("causal_delta_") or name.startswith("device_is_")]
     if not selected:
         raise ValueError(f"Feature set {feature_set!r} selected no device features")
     return [names.index(name) for name in selected]
@@ -222,6 +224,16 @@ def append_causal_device_deltas(
     data["x"] = np.concatenate((values, deltas.astype(np.float32)), axis=1).astype(np.float32)
     return [*names, *[f"causal_delta_{name}" for name in names]]
 
+def append_device_one_hot(data: dict[str, np.ndarray], device_count: int) -> list[str]:
+    """Append a receiver identity indicator after causal feature construction."""
+    device_ids = data["device_id"].astype(np.int64)
+    if np.any(device_ids < 0) or np.any(device_ids >= device_count):
+        raise ValueError("Device identifier is outside the declared mapping")
+    one_hot = np.zeros((len(device_ids), device_count), dtype=np.float32)
+    one_hot[np.arange(len(device_ids)), device_ids] = 1.0
+    data["x"] = np.concatenate((data["x"], one_hot), axis=1).astype(np.float32)
+    return [f"device_is_{device_id}" for device_id in range(device_count)]
+
 def scale_train_only(datasets: dict[str, dict[str, np.ndarray]]) -> dict[str, list[float]]:
     train_x = datasets["train"]["x"]
     if len(train_x) == 0:
@@ -275,6 +287,16 @@ def main() -> None:
         elif causal_names != candidate_names:
             raise RuntimeError("Causal device feature contract differs between splits")
     feature_names = causal_names or feature_names
+    if args.feature_set == "causal_delta_with_device":
+        device_count = max(int(data["device_id"].max()) for data in datasets.values() if len(data["device_id"])) + 1
+        device_names: list[str] | None = None
+        for data in datasets.values():
+            candidate_names = append_device_one_hot(data, device_count)
+            if device_names is None:
+                device_names = candidate_names
+            elif device_names != candidate_names:
+                raise RuntimeError("Device one-hot feature contract differs between splits")
+        feature_names = [*feature_names, *(device_names or [])]
     selected_indices = select_feature_indices(feature_names, args.feature_set)
     feature_names = [feature_names[index] for index in selected_indices]
     for data in datasets.values():
