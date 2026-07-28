@@ -132,7 +132,8 @@ python pipeline_total/05_build_train_val_test_tensors.py --csv output/processed_
    ```
 
 4. 优先查看至少两台设备的 `Cn0DbHz`，并使用可用设备的 `AgcDb`、时间不确定度和
-   伪距率不确定度交叉验证。Pixel Watch1 的 AGC 全缺失，不能单独作为 AGC 依据。
+   伪距率不确定度交叉验证。Google Pixel Watch 1 与 Watch 2 均不报告 L5，不能作为
+   L5 直接欺骗的交叉设备证据；Pixel Watch1 的 AGC 全缺失，不能单独作为 AGC 依据。
 
 5. 记录所有设备共同出现的异常开始/结束秒。区间两端均为闭区间，格式为
    `[start_tow, end_tow]`。仅有单设备异常、日志中断或无法确定的片段不写入正式标签。

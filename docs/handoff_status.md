@@ -165,8 +165,8 @@ outer test 的逐设备 Recall 为 Pixel 6 `7.52%`、Pixel Watch 1 `15.57%`、Pi
 
 - 操场动态 L15 即使收紧标签后，逐 signal LSTM validation Recall 仍只有 34.50%；操场动态 L5 Recall 仅 9.27%。这说明问题不只来自那一个过宽区间。
 - 当前保留 7-fold 基线中，操场长 L5 Session 的 Macro-F1 为 0.6761、Recall 为 55.86%、FAR 为 12.74%，仍是最明显的瓶颈；操场 L15 Session 的 Macro-F1 为 0.8429、Recall 为 65.03%、FAR 为 0.66%，主要问题仍是漏检。这两个 Session 应继续优先做逐设备、逐频段和原始曲线复核。旧 full-19 TCN 基线对应的 0.6329/50.33%/15.50% 只作历史对照。
-- 新主楼 L5 的正类数量偏少并不等于张量漏样本。当前标签语义是“目标 TOW 区间且 `FreqBand == 5` 才为正类”；同录制中的 L1 信号仍为负类。Pixel Watch 在这些录制中通常没有 L5 信号，因此会贡献大量负类而没有 L5 正类。
-- Google Pixel Watch 1 的 `AgcDb` 全缺失。绝对 AGC 统计很容易携带设备身份，必须保留缺失标记，并在后续做 no-AGC 或相对化消融。
+- 新主楼 L5 的正类数量偏少并不等于张量漏样本。当前标签语义是“目标 TOW 区间且 `FreqBand == 5` 才为正类”；同录制中的 L1 信号仍为负类。Google Pixel Watch 1 与 Google Pixel Watch 2 的芯片均不报告 L5，因此它们只贡献 L1 负类，不能用于 L5 直接欺骗 Recall 的设备比较。
+- Google Pixel Watch 1 的 `AgcDb` 全缺失；Google Pixel Watch 2 虽有 AGC，但两款 Watch 均没有 L5 观测。绝对 AGC 统计很容易携带设备身份，必须保留缺失标记，并在后续做 no-AGC 或相对化消融。
 - `pipeline_total/02_batch_plot_feature_images.py` 只按显式 Session 级 reviewed 配置绘制阴影，不再使用场景级回退；PNG 仍只是复核辅助证据，标签判断以 `configs/preprocessing.yml` 和重建后的 CSV 为准。
 
 ## 4. 路线演进与当前边界
