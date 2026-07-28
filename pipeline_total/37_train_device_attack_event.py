@@ -34,6 +34,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--patience", type=int, default=8)
     parser.add_argument("--seed", type=int, default=2026)
     parser.add_argument("--num-workers", type=int, default=0)
+    parser.add_argument("--include-devices", nargs="+", help="restrict training/evaluation to named receiver devices")
     parser.add_argument("--checkpoint", type=Path)
     parser.add_argument("--test-only", action="store_true")
     parser.add_argument("--calibrate-only", action="store_true", help="select an alarm threshold on val.npz using an existing checkpoint")
@@ -67,7 +68,7 @@ def seed_all(seed: int) -> None:
 class EventDataset(Dataset):
     REQUIRED = {"x", "y_event", "device_id", "recording_id", "source_id", "endpoint_tow"}
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, include_device_ids: set[int] | None = None) -> None:
         with np.load(path, allow_pickle=False) as data:
             if missing := self.REQUIRED.difference(data.files):
                 raise ValueError(f"{path} is missing {sorted(missing)}")
@@ -77,6 +78,16 @@ class EventDataset(Dataset):
             self.recording_id = torch.from_numpy(data["recording_id"].astype(np.int64))
             self.source_id = torch.from_numpy(data["source_id"].astype(np.int64))
             self.endpoint_tow = torch.from_numpy(data["endpoint_tow"].astype(np.float64))
+        if include_device_ids is not None:
+            selected = torch.zeros(len(self.device_id), dtype=torch.bool)
+            for device_id in include_device_ids:
+                selected |= self.device_id == device_id
+            self.x = self.x[selected]
+            self.y = self.y[selected]
+            self.device_id = self.device_id[selected]
+            self.recording_id = self.recording_id[selected]
+            self.source_id = self.source_id[selected]
+            self.endpoint_tow = self.endpoint_tow[selected]
         if self.x.ndim != 2 or len(self.x) != len(self.y):
             raise ValueError(f"Invalid device tensor shapes in {path}")
 
@@ -152,8 +163,8 @@ def load_checkpoint_model(checkpoint_path: Path, device: torch.device, input_dim
     return checkpoint, model
 
 
-def calibrate_checkpoint(args: argparse.Namespace, device_names: dict[int, str], device: torch.device) -> None:
-    val = EventDataset(args.data_dir / "val.npz")
+def calibrate_checkpoint(args: argparse.Namespace, device_names: dict[int, str], device: torch.device, include_device_ids: set[int] | None) -> None:
+    val = EventDataset(args.data_dir / "val.npz", include_device_ids)
     checkpoint, model = load_checkpoint_model(args.checkpoint, device, val.x.shape[1])
     probability = probabilities(model, val, device, args.batch_size)
     candidates = [evaluate_probability(val, probability, threshold, device_names) for threshold in args.thresholds]
@@ -187,20 +198,27 @@ def main() -> None:
     seed_all(args.seed)
     metadata = json.loads((args.data_dir / "metadata.json").read_text(encoding="utf-8"))
     device_names = {int(value): str(key) for key, value in metadata.get("device_mapping", {}).items()}
+    named_device_ids = {name: device_id for device_id, name in device_names.items()}
+    include_device_ids: set[int] | None = None
+    if args.include_devices:
+        unknown = sorted(set(args.include_devices).difference(named_device_ids))
+        if unknown:
+            raise ValueError(f"Unknown device names: {unknown}; available={sorted(named_device_ids)}")
+        include_device_ids = {named_device_ids[name] for name in args.include_devices}
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if args.test_only:
-        test = EventDataset(args.data_dir / "test.npz")
+        test = EventDataset(args.data_dir / "test.npz", include_device_ids)
         checkpoint, model = load_checkpoint_model(args.checkpoint, device, test.x.shape[1])
         args.output_dir.mkdir(parents=True, exist_ok=True)
         threshold = float(checkpoint.get("alarm_threshold", 0.5))
         save_json(args.output_dir / "test_metrics_device_event.json", evaluate_probability(test, probabilities(model, test, device, args.batch_size), threshold, device_names))
         return
     if args.calibrate_only:
-        calibrate_checkpoint(args, device_names, device)
+        calibrate_checkpoint(args, device_names, device, include_device_ids)
         return
 
-    train = EventDataset(args.data_dir / "train.npz")
-    val = EventDataset(args.data_dir / "val.npz")
+    train = EventDataset(args.data_dir / "train.npz", include_device_ids)
+    val = EventDataset(args.data_dir / "val.npz", include_device_ids)
     if len(val) == 0:
         raise ValueError("Validation is empty; use a tensor directory with an inner validation split")
     model = make_model(args.model, train.x.shape[1], args.hidden_dim, args.dropout).to(device)
@@ -240,7 +258,7 @@ def main() -> None:
     torch.save({
         "model": args.model, "input_dim": int(train.x.shape[1]), "hidden_dim": args.hidden_dim, "dropout": args.dropout,
         "best_val_macro_f1": best_score, "state_dict": best_state, "task": "device_attack_event",
-        "label_semantics": metadata["label_semantics"],
+        "label_semantics": metadata["label_semantics"], "included_device_names": args.include_devices,
     }, checkpoint_path)
     save_json(args.output_dir / "training_history.json", history)
     model.load_state_dict(best_state)
