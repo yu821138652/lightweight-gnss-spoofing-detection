@@ -292,23 +292,30 @@ python pipeline_total/20_build_static_timeblock_tensors.py `
 
 ## 8. 本地生成物保留策略
 
-本次清理后，`output/` 只保留：
+2026-07-28 已完成一次系统性磁盘清理：`output/` 从约 12G 降到约 2.8G，只保留核心缓存、当前基线 checkpoint 和标签复核证据，其余试错/淘汰路线的张量与训练明细均已物理删除。清理清单和逐类重建入口另见 `output/README.md`。清理后 `output/` 保留：
 
 - `processed_gnss_data.csv` 与缺失报告；
-- `data_csv_audit.json`；
+- `data_csv_audit.json`、`data_manifest.csv`、`data_csv_session_manifest.csv`；
 - `dynamic_labeling_review/`；
 - `review/trusted_signal_baseline_v1/` 下的关键错分明细与汇总；
 - `label_plots_20260723/new_building/`（238 张）和 `label_plots_20260723/playground/`（623 张），按统一 Session 级标签配置从 123 份现役日志干净重建；
+- `label_review_dashboards/`，当前 Session 级标签审查面板；
 - `protocols/static_time_block_outer_v2/`、`tensors/static_timeblock_outer_v2/` 和 `training/static_timeblock_outer_v2/`，作为本轮 7-fold 重训的协议、张量、checkpoint、日志和逐折指标；
 - `training/static_timeblock_outer_v2_explore_compact11_tcn16_d10/`，作为当前保留静态逐 signal 基线的 7-fold checkpoint、逐折指标和 fold 6 设备×频段诊断 CSV；
 - `training/static_timeblock_outer_v2_ablate_cn0_agc_coverage_v1/`，作为当前 10 维 stats 联合消融的 checkpoint、逐折指标和设备×频段诊断 CSV；
-- `tensors/static_timeblock_outer_v2_l5_l1_positive/`、`training/static_timeblock_outer_v2_l5_l1_positive_compact11_tcn16_d10/` 和固定旧 checkpoint 的同标签评分目录，作为一次未采纳的标签敏感性实验；结论已写入本文，后续磁盘清理时可整体删除并按需重建；
-- `protocols/mixed_timeblock_outer_cv4_v2/`、`protocols/mixed_timeblock_outer_cv4_w5_v2/`、`tensors/mixed_timeblock_outer_cv4_w5_v2/` 和 `training/mixed_timeblock_outer_cv4_w5_compact11_tcn16_d10_v2/`，作为可信统一静态+动态 4-fold 基线的可重建协议、张量、checkpoint 和汇总；v1 仅保留为发现协议问题的历史试跑，可在确认不需追溯后删除；
-- `protocols/mixed_timeblock_outer_cv4_w5_state_stratified_v2/`、`tensors/mixed_timeblock_outer_cv4_w5_state_stratified_v2/` 和 `training/mixed_timeblock_outer_cv4_w5_compact11_tcn16_d10_state_stratified_v2/`，作为修正后但未采纳的 inner split 消融；v1 未严格满足逐 Session clean 80/20，仅保留为问题追溯，后续需要释放空间时可优先删除 v1 及 v2 张量并按需重建；
-- `tensors/mixed_timeblock_outer_cv4_w5_state_stratified_interval_all_positive_v1/` 和 `training/mixed_timeblock_outer_cv4_w5_compact11_tcn16_d10_state_stratified_interval_all_positive_v1/`，作为未采纳的全区间正类标签敏感性实验；它与旧任务的 Test 标签定义不同，只能按文档中的场景/频段结果解释，后续可按需重建；
+- `protocols/mixed_timeblock_outer_cv4_v2/`、`protocols/mixed_timeblock_outer_cv4_w5_v2/`、`tensors/mixed_timeblock_outer_cv4_w5_v2/` 和 `training/mixed_timeblock_outer_cv4_w5_compact11_tcn16_d10_v2/`，作为可信统一静态+动态 4-fold 基线的可重建协议、张量、checkpoint 和汇总；
+- `protocols/mixed_timeblock_outer_cv4_w5_state_stratified_v2/` 和 `training/mixed_timeblock_outer_cv4_w5_compact11_tcn16_d10_state_stratified_v2/`，作为修正后但未采纳的 inner split 消融的协议与轻量 checkpoint；其张量已删除，需要时按 `pipeline_total/README.md` 重建；
 - `output/README.md`。
 
-张量、checkpoint 和训练日志仍属于可重建产物；当前 `static_timeblock_outer_v2` 只因本轮交接与新旧对照暂时保留，指标稳定写入文档后可再归档或删除。当前两套 plots 只是本轮标签复核需要。旧产物已集中迁入被 Git 忽略的 `output/_rebuildable_archive_20260722/`。此外，旧 `new_building_label_plots/` 与 `playground_label_plots/` 未自动删除，其中旧操场目录仍含已剔除 Session 的 63 张残留图，不能再作为当前数据口径使用。当前执行环境的递归删除审批服务异常，因此磁盘空间尚未真正释放；确认无需恢复后可人工删除旧目录和归档。历史指标已经压缩进本文和 P0–P5 台账。
+本轮已物理删除的产物（结论均已写入本文或 `docs/static_dynamic_signal_cv4_20260727.md`，需要时按脚本重建）：
+
+- `_rebuildable_archive_20260722/`（旧张量、checkpoint、plots、smoke 和压缩副本归档，约 3.7G）；
+- 未采纳的标签敏感性实验：`tensors/`+`training/` 下的 `static_timeblock_outer_v2_l5_l1_positive*` 和 `mixed_timeblock_outer_cv4_w5_state_stratified_interval_all_positive_v1`（后者含约 1.6G 逐 endpoint 预测明细 CSV）；
+- v1 与淘汰协议：`mixed_timeblock_outer_cv4_w5_v1`、`mixed_timeblock_outer_cv4_v1`、`mixed_timeblock_outer_cv4_w5_state_stratified_v1`、各 `state_stratified_draft*`、`static_time_block_window_sweep_w7guard_v1` 的协议、张量和训练目录；
+- state_stratified v2 的**张量**（协议和 checkpoint 已保留，见上）；
+- 试错训练小目录：`static_timeblock_outer_v2` 下的 `explore_compact11_tcn32`、`explore_gru16/lstm16/compact11_lstm16`、`explore_no_*`、`explore_rxstd11`、各 `ablate_agc_*`、`agc_peer_residual*` 及其张量，`static_window_sweep_w7guard*`。
+
+张量、checkpoint 和训练日志仍属于可重建产物；当前 `static_timeblock_outer_v2` 只因本轮交接与新旧对照暂时保留，指标稳定写入文档后可再归档或删除。当前两套 plots 只是本轮标签复核需要。被剔除的两个 Session 原始日志副本保留在 Git 忽略的 `tmp/`（`2022.07.08`、`2025.07.30.09.41_2025.07.30.09.45`），是这两份数据的仅存本地副本，不可重建，勿删。
 
 ## 9. 交接阅读顺序
 
