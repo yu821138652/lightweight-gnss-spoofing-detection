@@ -8,6 +8,7 @@
 - 17 个动态 Session 的 pooled Macro-F1 为 **0.7693**，Session 等权为 **0.7024 +/- 0.1085**。
 - `dy_L5` pooled Macro-F1 仅 **0.5647**，Precision **13.03%**、Recall **18.67%**；四个 Session 等权为 **0.5733 +/- 0.0427**。
 - mixed 模型在同一批静态 test endpoint 上的 pooled Macro-F1 为 0.8782，高于纯静态对照的 0.8639；但 Session 等权从 0.8502 降至 0.8333，不能解释为稳定泛化提升。
+- reviewed 区间内“所有频段均为正类”的标签敏感性实验也已完成：静态非目标频段可以学到一部分区间状态，但动态非目标频段合计 Recall 只有 **16.77%**；它没有解决动态识别，也不替代正式 target-band-only 基线。
 
 因此，本轮建立的是当前标签口径下可审计的统一基线，并再次确认“加入更多动态样本”本身不足以解决动态 L5。它不支持继续围绕 overall 的零点零几做大规模扫参。
 
@@ -50,6 +51,99 @@ raw 输入明确不使用中央 CSV 中已有的 `Cn0DbHz_dt` 和 `Cn0DbHz_std`�
 | 等权 mean +/- SD | **0.8978 +/- 0.0097** | **0.8624 +/- 0.0243** | 79.37% +/- 9.53% | 78.46% +/- 8.32% | 5.56% +/- 2.86% |
 
 四折 test 混淆矩阵合计为 `TN/FP/FN/TP = 2,210,667 / 138,512 / 130,135 / 500,599`。
+
+## Inner train/validation 划分消融：reviewed-state-stratified（2026-07-28）
+
+为验证“在每个 development Session 中分别从 clean 和 attack 时段取约 80% train、20% validation”的设想，补做了一次严格 A/B 实验。中央 CSV、target-band-only 行级标签、outer 4-fold assignment、四折 test endpoint、W5、compact11、TCN16、优化参数和 seed 均保持不变；唯一改变的是 inner train/validation 的选取方式。本实验是协议消融，未替代上面的 strict-v2 基线。
+
+具体规则与防边界泄漏约束如下：
+
+- attack 时间状态由 `configs/preprocessing.yml` 中 reviewed Session 的闭区间 TOW 定义，与行级 `Label` 和 `FreqBand` 无关；它只用于分层，不改变模型学习的正式标签语义。
+- clean 时段在每个 development Session 内约 80/20 划分；可安全拆分的长 attack run 也在本 Session 内约 80/20 划分。
+- 短 attack run 若拆分后无法在 guard 外同时留下有效 W5，则作为不可拆 atom，在同 Scenario 的 development Sessions 之间分配给 train 或 validation。因此，并非每个短 Session 的 attack 时段都强制同时进入两边。
+- 同一 canonical epoch 的全部设备、卫星和频段只能属于同一 split；每个 train/validation 边界两侧各留 4 个 guard epoch。
+
+协议审计结果：strict-v2 与新协议的 `fold_assignment.csv` 及四折 `recording_split_manifest.csv` 逐字节一致；72/72 个 development Session×fold 的 clean train/validation 均保留有效 W5，clean raw validation 均值为 20.10%，范围为 17.92%-22.22%；39 个可拆长 attack run 与 33 个短 attack atom 全部通过窗口约束；每个 Scenario×fold 的 attack train/validation 均有有效 W5。旧 `recording-local --strict-validation` 路径的四折关键文件哈希也保持不变。
+
+第一次生成的 `state_stratified_v1` 在训练后复现检查中发现：Fold 1 的 `dy_L1/09.18-09.22` clean validation 只有 `42/279=15.05%`。原因是长 attack run 的 prefix/suffix 方向先独立决定，随后限制了相邻 clean 可选区间。最终 v2 改为在 attack 规模误差并列时，联合选择长 attack 方向与可行 clean 区间，将该 Session 修正为 `56/279=20.07%`；协议元数据同时写入生成脚本 SHA256，且与当前源码一致。下表只报告修正后的 v2；v1 的训练结果不再作为本实验结论。
+
+| 指标 | strict-v2 | state-stratified | 变化 |
+|---|---:|---:|---:|
+| Validation fold 等权 Macro-F1 | 0.8978 +/- 0.0097 | **0.9295 +/- 0.0141** | +0.0317 |
+| Test fold 等权 Macro-F1 | **0.8624 +/- 0.0243** | 0.8605 +/- 0.0275 | -0.0018 |
+| Overall pooled Macro-F1 | **0.8656** | 0.8637 | -0.0019 |
+| Static pooled Macro-F1 | **0.8782** | 0.8756 | -0.0027 |
+| Dynamic pooled Macro-F1 | **0.7693** | 0.7668 | -0.0025 |
+| `dy_L5` pooled Macro-F1 | 0.5647 | **0.5817** | +0.0170 |
+| Overall Session 等权 Macro-F1 | 0.7405 +/- 0.1210 | **0.7429 +/- 0.1157** | +0.0023 |
+| Static Session 等权 Macro-F1 | 0.8333 +/- 0.0974 | **0.8337 +/- 0.0936** | +0.0004 |
+| Dynamic Session 等权 Macro-F1 | 0.7024 +/- 0.1085 | **0.7055 +/- 0.1025** | +0.0031 |
+| `dy_L5` Session 等权 Macro-F1 | 0.5733 +/- 0.0427 | **0.5897 +/- 0.0384** | +0.0164 |
+
+新方案的 `dy_L5` Precision / Recall / FAR 为 `16.43% / 21.20% / 2.51%`，旧基线为 `13.03% / 18.67% / 2.90%`。四个 `dy_L5` Session 均改善，但单 Session Macro-F1 只增加 0.0036-0.0305，最低 Session 仍仅为 0.5422。放到全部 24 个 test Session 后，13 个改善、11 个退化；`dy_L1` pooled Macro-F1 从 0.7977 降至 0.7895，抵消了 `dy_L5` 和 `dy_L_15` 的局部收益。
+
+新的 validation 明显变高而 outer test 基本持平，说明它更容易评估“同一 Session 分布内”的拟合情况，却没有增强对完整未见 Session 的选择能力。W5 guard 已排除相邻窗口跨边界重叠，但 train/validation 仍有意共享 Session、设备和环境分布；这种 domain overlap 不能当作跨 Session 泛化证据。`dy_L5` 的约 0.017 提升仍不属于质变，Recall 也只有 21.20%，动态整体还略有下降。因此继续保留 strict-v2 为统一 mixed 基线，state-stratified v2 只作为可复现的诊断协议。
+
+四个 checkpoint 均在读取任何 test 前锁定：最晚 checkpoint 时间为 02:44:15.697，最早 test 结果时间为 02:45:04.385，间隔约 48.7 秒。本地产物为：
+
+```text
+output/protocols/mixed_timeblock_outer_cv4_w5_state_stratified_v2/
+output/tensors/mixed_timeblock_outer_cv4_w5_state_stratified_v2/
+output/training/mixed_timeblock_outer_cv4_w5_compact11_tcn16_d10_state_stratified_v2/
+```
+
+协议入口是在脚本 19 的原 mixed 命令上替换输出目录，并增加：
+
+```text
+--validation-mode reviewed-state-stratified
+--label-config configs/preprocessing.yml
+```
+
+## 标签语义敏感性：reviewed 区间内全部信号为正类（2026-07-28）
+
+本实验检验另一种任务定义：不再询问“这个 `signal_id` 是否属于被直接欺骗的目标频段”，而只询问“这个 endpoint 是否位于人工 reviewed 的欺骗时间区间”。具体策略为 `reviewed_interval_all_positive`：对每个 reviewed Session 严格令 `Label=1 iff TOW` 位于任一欺骗闭区间，不区分 L1/L5、设备、卫星或 `signal_id`；空区间 Session 保持全负。策略只在脚本 20 构建张量时生效，不修改中央 CSV 或 `preprocessing.yml`。
+
+为避免把 inner split 与标签变化混在一起，本实验固定使用修正后的 state-stratified v2 协议、相同 outer test Session、W5、compact11、TCN16、优化参数和 seed。新旧四折的窗口、manifest、trace index、特征名和 train-only scaler 逐项一致，唯一实验变量是 train/validation/test 的标签语义。24 个 reviewed recording 中有 23 个非空区间、1 个显式空区间，共 24 段；中央行级正类由 631,003 增至 829,389（新增 198,386），进入 W5 endpoint 后正类由 630,734 增至 828,913（新增 198,179）。
+
+新标签的四折最佳 Validation epoch 为 `27 / 20 / 30 / 28`。四个 checkpoint 全部锁定且记录 SHA-256 后才运行 `test-only`，测试与后续分组评估均未改变 checkpoint。
+
+下表只是两个**不同预测任务**的标签敏感性对照，不能把差值表述成同一任务上的模型提升：
+
+| 指标 | target-band-only | interval-all-positive | 变化 |
+|---|---:|---:|---:|
+| Validation fold 等权 Macro-F1 | 0.9295 +/- 0.0141 | 0.9229 +/- 0.0133 | -0.0066 |
+| Test fold 等权 Macro-F1 | 0.8605 +/- 0.0275 | 0.8616 +/- 0.0255 | +0.0011 |
+| Overall pooled Macro-F1 | 0.8637 | 0.8668 | +0.0031 |
+| Static pooled Macro-F1 | 0.8756 | 0.8851 | +0.0096 |
+| Dynamic pooled Macro-F1 | 0.7668 | 0.7351 | **-0.0317** |
+| `dy_L1` pooled Macro-F1 | 0.7895 | 0.7464 | **-0.0431** |
+| `dy_L5` pooled Macro-F1 | 0.5817 | 0.6394 | +0.0578 |
+| Overall Session 等权 Macro-F1 | 0.7429 +/- 0.1157 | 0.7524 +/- 0.1128 | +0.0095 |
+| Static Session 等权 Macro-F1 | 0.8337 +/- 0.0936 | 0.8717 +/- 0.0633 | +0.0380 |
+| Dynamic Session 等权 Macro-F1 | 0.7055 +/- 0.1025 | 0.7033 +/- 0.0897 | -0.0022 |
+| `dy_L5` Session 等权 Macro-F1 | 0.5897 +/- 0.0384 | 0.6382 +/- 0.0048 | +0.0485 |
+
+Overall 的变化掩盖了任务内部的明显差异。新任务的 pooled Precision / Recall / FAR 为 `87.68% / 73.88% / 4.00%`，旧任务为 `78.01% / 79.09% / 5.98%`。Dynamic 的 Recall 则从 53.00% 降至 43.23%。尤其是 `dy_L5`：正类支持从 4,836 增至 21,975，Precision 从 16.43% 变为 62.93%，但 Recall 只从 21.20% 变为 22.31%；Session 等权 Recall 反而从 24.05% 降至 22.18%。因此 `dy_L5` Macro-F1 的上升主要来自标签定义改变后，大量原先算作 L1 假正的区间内预测被重新计为真阳性，而不是动态区间检出率发生质变。
+
+对四类本次新增为正类的非目标频段单独统计：
+
+| 场景中的新增正类频段 | Test 正类 endpoint | Macro-F1 | Precision | Recall | FAR |
+|---|---:|---:|---:|---:|---:|
+| `dy_L1` 的 L5 | 15,880 | 0.5446 | 61.57% | **11.20%** | 1.60% |
+| `dy_L5` 的 L1 | 17,139 | 0.6361 | 61.20% | **21.93%** | 1.59% |
+| `st_L1` 的 L5 | 26,228 | 0.8483 | 81.69% | 70.40% | 4.23% |
+| `st_L5` 的 L1 | 138,932 | 0.7907 | 78.78% | 60.30% | 6.17% |
+
+合并后，静态新增非目标频段的 Recall 为 **61.90%**，动态只有 **16.77%**。这说明“同一攻击区间可能影响非目标频段观测”在静态数据中存在一定可学习信号，但动态情况下这些信号依旧非常弱；把它们统一改成正类不会自动让现有逐 signal 特征获得时间区间检测能力。
+
+逐完整 Session 配对也不支持稳定改善：24 个 Session 中 12 个 Macro-F1 上升、12 个下降；实际增加正类的 15 个 Session 中 7 个上升、8 个下降。六个含攻击正类的 `dy_L1` Session 全部下降；四个 `dy_L5` Session 中三个上升、一个下降；三个 `st_L5` Session 均上升。结论是：该语义可作为“攻击时间上下文/事件级异常”的独立任务继续研究，但不能替代当前卫星/目标频段直接欺骗标签，也没有推翻“动态特征可分性不足”的主要判断。
+
+本地产物：
+
+```text
+output/tensors/mixed_timeblock_outer_cv4_w5_state_stratified_interval_all_positive_v1/
+output/training/mixed_timeblock_outer_cv4_w5_compact11_tcn16_d10_state_stratified_interval_all_positive_v1/
+```
 
 ## 静态与动态
 

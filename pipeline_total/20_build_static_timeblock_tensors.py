@@ -85,7 +85,11 @@ STAT_SCALED_COUNT = 16
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - [%(levelname)s] - %(message)s")
 LOG = logging.getLogger(__name__)
 
-LABEL_POLICIES = ("original", "l5_l1_positive")
+LABEL_POLICIES = (
+    "original",
+    "l5_l1_positive",
+    "reviewed_interval_all_positive",
+)
 DATA_SCOPES = ("static", "mixed")
 
 
@@ -117,6 +121,12 @@ def _apply_label_policy(
     the formal preprocessing configuration.  This tests the broader target
     semantics "signal affected during an L5 attack" while leaving the original
     frequency-specific labels reproducible.
+
+    ``reviewed_interval_all_positive`` strictly defines the target from the
+    reviewed attack intervals: an observation is positive iff its TOW lies in
+    one of its recording's intervals, irrespective of frequency band, device,
+    satellite, or signal ID.  This experimental target never writes changed
+    labels back to the processed CSV or YAML configuration.
     """
     if policy not in LABEL_POLICIES:
         raise ValueError(f"Unsupported label policy {policy!r}; expected one of {LABEL_POLICIES}")
@@ -131,7 +141,9 @@ def _apply_label_policy(
     if policy == "original":
         return frame, summary
     if label_config_path is None:
-        raise ValueError("--label-config is required for label policy l5_l1_positive")
+        if policy == "l5_l1_positive":
+            raise ValueError("--label-config is required for label policy l5_l1_positive")
+        raise ValueError(f"--label-config is required for label policy {policy}")
     if not label_config_path.is_file():
         raise FileNotFoundError(label_config_path)
     with label_config_path.open("r", encoding="utf-8") as handle:
@@ -146,85 +158,274 @@ def _apply_label_policy(
             "labeling.session_spoofing_tow_intervals must be a mapping in "
             f"{label_config_path}"
         )
-    candidate = pd.Series(False, index=frame.index)
-    configured_intervals = 0
-    interval_snapshot: list[dict[str, object]] = []
-    for environment, scenarios in session_labels.items():
-        if not isinstance(scenarios, dict):
-            continue
-        sessions = scenarios.get("st_L5", {})
-        if not isinstance(sessions, dict):
-            continue
-        for session, entry in sessions.items():
-            if not isinstance(entry, dict) or str(entry.get("status", "")) != "reviewed":
+    if policy == "l5_l1_positive":
+        # Preserve the historical policy exactly: it is intentionally limited
+        # to reviewed static L5 recordings and their L1 rows.
+        candidate = pd.Series(False, index=frame.index)
+        configured_intervals = 0
+        interval_snapshot: list[dict[str, object]] = []
+        for environment, scenarios in session_labels.items():
+            if not isinstance(scenarios, dict):
                 continue
-            recording_mask = (
-                frame["Environment"].astype(str).eq(str(environment))
-                & frame["Scenario"].astype(str).eq("st_L5")
-                & frame["Session"].astype(str).eq(str(session))
-                & frame["FreqBand"].eq(1)
-            )
-            if not recording_mask.any():
+            sessions = scenarios.get("st_L5", {})
+            if not isinstance(sessions, dict):
                 continue
-            intervals = entry.get("intervals", []) or []
-            for start_tow, end_tow in intervals:
-                start_tow = float(start_tow)
-                end_tow = float(end_tow)
-                if start_tow > end_tow:
-                    raise ValueError(
-                        f"Invalid st_L5 interval [{start_tow}, {end_tow}] for "
-                        f"{environment}/{session}"
-                    )
-                configured_intervals += 1
-                interval_snapshot.append({
-                    "Environment": str(environment),
-                    "Scenario": "st_L5",
-                    "Session": str(session),
-                    "start_tow": start_tow,
-                    "end_tow": end_tow,
-                })
-                candidate |= recording_mask & frame["TOW"].between(
-                    start_tow, end_tow, inclusive="both"
+            for session, entry in sessions.items():
+                if not isinstance(entry, dict) or str(entry.get("status", "")) != "reviewed":
+                    continue
+                recording_mask = (
+                    frame["Environment"].astype(str).eq(str(environment))
+                    & frame["Scenario"].astype(str).eq("st_L5")
+                    & frame["Session"].astype(str).eq(str(session))
+                    & frame["FreqBand"].eq(1)
                 )
+                if not recording_mask.any():
+                    continue
+                intervals = entry.get("intervals", []) or []
+                for start_tow, end_tow in intervals:
+                    start_tow = float(start_tow)
+                    end_tow = float(end_tow)
+                    if start_tow > end_tow:
+                        raise ValueError(
+                            f"Invalid st_L5 interval [{start_tow}, {end_tow}] for "
+                            f"{environment}/{session}"
+                        )
+                    configured_intervals += 1
+                    interval_snapshot.append({
+                        "Environment": str(environment),
+                        "Scenario": "st_L5",
+                        "Session": str(session),
+                        "start_tow": start_tow,
+                        "end_tow": end_tow,
+                    })
+                    candidate |= recording_mask & frame["TOW"].between(
+                        start_tow, end_tow, inclusive="both"
+                    )
+        if configured_intervals == 0:
+            raise ValueError(
+                "label policy l5_l1_positive found no reviewed st_L5 intervals "
+                f"in {label_config_path}"
+            )
+        previous_positive = frame["Label"].eq(1)
+        newly_positive = candidate & ~previous_positive
+        if not candidate.any():
+            raise ValueError(
+                "label policy l5_l1_positive matched no L1 rows in the selected protocol data"
+            )
+        if not newly_positive.any():
+            raise ValueError(
+                "label policy l5_l1_positive changed no labels; matching L1 rows were already positive"
+            )
+        frame = frame.copy()
+        frame.loc[candidate, "Label"] = 1
+        affected = (
+            frame.loc[newly_positive, KEYS]
+            .value_counts(sort=False)
+            .rename("new_positive_rows")
+            .reset_index()
+            .to_dict(orient="records")
+        )
+        summary.update({
+            "label_config": str(label_config_path.resolve()),
+            "label_config_sha256": config_sha256,
+            "configured_intervals": configured_intervals,
+            "reviewed_intervals": interval_snapshot,
+            "candidate_rows": int(candidate.sum()),
+            "new_positive_rows": int(newly_positive.sum()),
+            "affected_recordings": affected,
+        })
+        LOG.info(
+            "label policy=%s candidate_rows=%d new_positive_rows=%d recordings=%d",
+            policy,
+            int(candidate.sum()),
+            int(newly_positive.sum()),
+            len(affected),
+        )
+        return frame, summary
+
+    # Resolve the alternative target from the exact recordings already kept by
+    # LabelStatus/data-scope/outer-manifest filtering.  Missing entries must not
+    # be silently ignored because that would leave part of a fold under a
+    # different target definition.
+    tow = pd.to_numeric(frame["TOW"], errors="coerce")
+    invalid_tow = ~np.isfinite(tow.to_numpy(dtype=np.float64))
+    if invalid_tow.any():
+        raise ValueError(
+            "label policy reviewed_interval_all_positive requires finite TOW for every "
+            f"selected row; found {int(invalid_tow.sum())} invalid rows"
+        )
+    key_frame = frame[KEYS].astype(str)
+    recording_positions = {
+        tuple(str(value) for value in identity): np.asarray(positions, dtype=np.int64)
+        for identity, positions in key_frame.groupby(KEYS, sort=False, dropna=False).indices.items()
+    }
+    tow_values = tow.to_numpy(dtype=np.float64)
+    interval_positive_values = np.zeros(len(frame), dtype=bool)
+    interval_snapshot: list[dict[str, object]] = []
+    recording_snapshot: list[dict[str, object]] = []
+    empty_recordings: list[dict[str, str]] = []
+    configured_intervals = 0
+    nonempty_recordings = 0
+
+    for identity in sorted(recording_positions):
+        environment, scenario, session = identity
+        environment_entry = session_labels.get(environment)
+        scenario_entry = (
+            environment_entry.get(scenario)
+            if isinstance(environment_entry, dict)
+            else None
+        )
+        entry = scenario_entry.get(session) if isinstance(scenario_entry, dict) else None
+        identity_text = " / ".join(identity)
+        if not isinstance(entry, dict):
+            raise ValueError(
+                f"Missing Session label entry for {identity_text!r} in {label_config_path}"
+            )
+        if str(entry.get("status", "needs_review")).strip().lower() != "reviewed":
+            raise ValueError(
+                f"Session {identity_text!r} is not reviewed in {label_config_path}"
+            )
+        raw_intervals = entry.get("intervals", [])
+        if raw_intervals is None:
+            raw_intervals = []
+        if not isinstance(raw_intervals, list):
+            raise ValueError(f"Session {identity_text!r} intervals must be a list")
+        parsed: list[tuple[float, float]] = []
+        for raw_interval in raw_intervals:
+            if not isinstance(raw_interval, (list, tuple)) or len(raw_interval) != 2:
+                raise ValueError(
+                    f"Session {identity_text!r} contains invalid interval {raw_interval!r}"
+                )
+            try:
+                start_tow = float(raw_interval[0])
+                end_tow = float(raw_interval[1])
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"Session {identity_text!r} contains invalid interval {raw_interval!r}"
+                ) from exc
+            if not np.isfinite(start_tow) or not np.isfinite(end_tow) or end_tow < start_tow:
+                raise ValueError(
+                    f"Session {identity_text!r} contains invalid interval {raw_interval!r}"
+                )
+            parsed.append((start_tow, end_tow))
+        parsed.sort()
+        for previous, current in zip(parsed, parsed[1:]):
+            if current[0] <= previous[1]:
+                raise ValueError(
+                    f"Session {identity_text!r} contains overlapping reviewed intervals: "
+                    f"{previous!r}, {current!r}"
+                )
+
+        positions = recording_positions[identity]
+        recording_interval_positive = np.zeros(len(positions), dtype=bool)
+        for start_tow, end_tow in parsed:
+            matched = (tow_values[positions] >= start_tow) & (tow_values[positions] <= end_tow)
+            if not matched.any():
+                raise ValueError(
+                    f"Reviewed interval [{start_tow}, {end_tow}] for {identity_text!r} "
+                    "matched no selected CSV rows"
+                )
+            recording_interval_positive |= matched
+            interval_snapshot.append({
+                "Environment": environment,
+                "Scenario": scenario,
+                "Session": session,
+                "start_tow": start_tow,
+                "end_tow": end_tow,
+            })
+        interval_positive_values[positions] = recording_interval_positive
+        configured_intervals += len(parsed)
+        if parsed:
+            nonempty_recordings += 1
+        else:
+            empty_recordings.append(dict(zip(KEYS, identity)))
+        recording_snapshot.append({
+            "Environment": environment,
+            "Scenario": scenario,
+            "Session": session,
+            "status": "reviewed",
+            "intervals": [[start, end] for start, end in parsed],
+        })
+
     if configured_intervals == 0:
         raise ValueError(
-            "label policy l5_l1_positive found no reviewed st_L5 intervals "
-            f"in {label_config_path}"
+            "label policy reviewed_interval_all_positive found no reviewed attack intervals "
+            "for recordings in the selected protocol data"
         )
+
+    interval_positive = pd.Series(interval_positive_values, index=frame.index)
     previous_positive = frame["Label"].eq(1)
-    newly_positive = candidate & ~previous_positive
-    if not candidate.any():
+    positive_outside = previous_positive & ~interval_positive
+    if positive_outside.any():
+        outside_values = positive_outside.to_numpy(dtype=bool)
+        bad_recordings = [
+            {
+                **dict(zip(KEYS, identity)),
+                "positive_outside_interval_rows": int(outside_values[positions].sum()),
+            }
+            for identity, positions in sorted(recording_positions.items())
+            if outside_values[positions].any()
+        ]
         raise ValueError(
-            "label policy l5_l1_positive matched no L1 rows in the selected protocol data"
+            "Processed CSV has positive labels outside the currently reviewed intervals; "
+            "rebuild or reconcile it before applying reviewed_interval_all_positive:\n"
+            + pd.DataFrame(bad_recordings).to_string(index=False)
         )
+    newly_positive = interval_positive & ~previous_positive
     if not newly_positive.any():
         raise ValueError(
-            "label policy l5_l1_positive changed no labels; matching L1 rows were already positive"
+            "label policy reviewed_interval_all_positive changed no labels; all rows inside "
+            "reviewed intervals were already positive"
         )
+
+    previous_values = previous_positive.to_numpy(dtype=bool)
+    new_values = newly_positive.to_numpy(dtype=bool)
+    outside_values = positive_outside.to_numpy(dtype=bool)
+    recording_stats = [
+        {
+            **dict(zip(KEYS, identity)),
+            "rows": int(len(positions)),
+            "original_positive_rows": int(previous_values[positions].sum()),
+            "interval_positive_rows": int(interval_positive_values[positions].sum()),
+            "new_positive_rows": int(new_values[positions].sum()),
+            "positive_outside_interval_rows": int(outside_values[positions].sum()),
+        }
+        for identity, positions in sorted(recording_positions.items())
+    ]
+    affected = [
+        {**{key: row[key] for key in KEYS}, "new_positive_rows": int(row["new_positive_rows"])}
+        for row in recording_stats
+        if int(row["new_positive_rows"]) > 0
+    ]
     frame = frame.copy()
-    frame.loc[candidate, "Label"] = 1
-    affected = (
-        frame.loc[newly_positive, KEYS]
-        .value_counts(sort=False)
-        .rename("new_positive_rows")
-        .reset_index()
-        .to_dict(orient="records")
-    )
+    frame["Label"] = interval_positive.astype(np.int8)
     summary.update({
+        "semantics": "Label = 1 iff row TOW is inside a reviewed interval for its recording",
         "label_config": str(label_config_path.resolve()),
         "label_config_sha256": config_sha256,
-        "configured_intervals": configured_intervals,
+        "reviewed_recording_count": int(len(recording_positions)),
+        "nonempty_interval_recording_count": int(nonempty_recordings),
+        "empty_interval_recording_count": int(len(empty_recordings)),
+        "empty_interval_recordings": empty_recordings,
+        "configured_intervals": int(configured_intervals),
         "reviewed_intervals": interval_snapshot,
-        "candidate_rows": int(candidate.sum()),
+        "reviewed_recordings": recording_snapshot,
+        "source_positive_rows": int(previous_positive.sum()),
+        "candidate_rows": int(interval_positive.sum()),
+        "interval_positive_rows": int(interval_positive.sum()),
         "new_positive_rows": int(newly_positive.sum()),
+        "positive_outside_interval_rows": int(positive_outside.sum()),
         "affected_recordings": affected,
+        "recording_stats": recording_stats,
     })
     LOG.info(
-        "label policy=%s candidate_rows=%d new_positive_rows=%d recordings=%d",
+        "label policy=%s source_positive_rows=%d interval_positive_rows=%d "
+        "new_positive_rows=%d recordings=%d",
         policy,
-        int(candidate.sum()),
+        int(previous_positive.sum()),
+        int(interval_positive.sum()),
         int(newly_positive.sum()),
-        len(affected),
+        len(recording_positions),
     )
     return frame, summary
 
@@ -969,6 +1170,15 @@ def build_fold(
     for source_key, source_rows in tqdm(df.groupby(source_group_cols, sort=True), desc="Building source windows"):
         key_tuple = tuple(str(source_key[i]) for i in range(3))
         device_name = str(source_key[3]); outer_role = str(source_key[5])
+        if label_policy == "reviewed_interval_all_positive":
+            epoch_state = source_rows.groupby("TimeNanos", sort=False)["Label"].agg(["min", "max"])
+            mixed_epochs = epoch_state[epoch_state["min"] != epoch_state["max"]]
+            if not mixed_epochs.empty:
+                raise ValueError(
+                    "label policy reviewed_interval_all_positive found signals from the same "
+                    f"receiver epoch on opposite sides of an interval boundary for {source_key}; "
+                    f"example TimeNanos={mixed_epochs.index[0]}"
+                )
         source = _apply_agc_common_mode(_aggregate_source(source_rows), agc_common_mode)
         source = _add_causal_reference_features(source, causal_reference_epochs)
         source_times = np.sort(source["TimeNanos"].unique().astype(np.int64))
@@ -1022,6 +1232,14 @@ def build_fold(
         LOG.info("%s raw=%s stats=%s active=%d positive=%d", split, datasets[split]["raw"].shape,
                  datasets[split]["stats"].shape, int(datasets[split]["mask"].sum()),
                  int((datasets[split]["y"][datasets[split]["mask"]] == 1).sum()))
+    label_policy_summary["final_endpoint_counts"] = {
+        split: {
+            "active": int(data["mask"].sum()),
+            "positive": int((data["y"][data["mask"]] == 1).sum()),
+            "negative": int((data["y"][data["mask"]] == 0).sum()),
+        }
+        for split, data in datasets.items()
+    }
     _fit_apply_scaler(datasets, output_dir)
 
     raw_dir = output_dir / "raw"; stats_dir = output_dir / "stats"

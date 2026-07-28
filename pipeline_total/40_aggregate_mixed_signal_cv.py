@@ -47,6 +47,7 @@ POOLED_GROUP_SPECS = {
     "overall": ("overall", ()),
     "motion": ("motion", ("motion",)),
     "scenario": ("scenario", ("Scenario", "motion")),
+    "scenario_band": ("scenario_band", ("Scenario", "motion", "band")),
     "environment_motion": ("session", ("Environment", "motion")),
     "environment_scenario": ("session", ("Environment", "Scenario", "motion")),
     "device_motion_band": (
