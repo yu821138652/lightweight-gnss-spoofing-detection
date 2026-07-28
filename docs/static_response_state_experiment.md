@@ -81,6 +81,50 @@ This supports the next full experiment design:
 
 ## Reproduction Commands
 
+### Full Fold Runner
+
+`pipeline_total/43_run_static_response_state_fold.py` runs one static fold from
+an existing signal tensor directory:
+
+1. build device response-state tensors
+2. train the flat three-class MLP
+3. evaluate the flat model on test
+4. train the binary direct-spoof expert
+5. calibrate the direct override threshold on validation and evaluate test
+
+Example:
+
+```powershell
+python pipeline_total/43_run_static_response_state_fold.py `
+  --fold fold_6 `
+  --python-exe H:\GNSS\program\Release_Package\Release_Package\venv\Scripts\python.exe `
+  --overwrite-device-tensors
+```
+
+Use `--dry-run` first to print the exact command list without executing it.
+The runner expects `output/tensors/static_timeblock_outer_v2/<fold>` to exist.
+At the time of this note, only `fold_6` and `fold_7` are present locally.
+
+For missing folds, first rebuild the signal tensors from the existing protocol
+manifests.  Example for `fold_1`:
+
+```powershell
+python pipeline_total/20_build_static_timeblock_tensors.py `
+  --outer-manifest output/protocols/static_time_block_outer_v2/fold_1/recording_split_manifest.csv `
+  --block-manifest output/protocols/static_time_block_outer_v2/fold_1/epoch_split_manifest.csv `
+  --output-dir output/tensors/static_timeblock_outer_v2/fold_1 `
+  --time-steps 5 `
+  --block-size 256
+```
+
+Then run the response-state fold runner:
+
+```powershell
+python pipeline_total/43_run_static_response_state_fold.py `
+  --fold fold_1 `
+  --python-exe H:\GNSS\program\Release_Package\Release_Package\venv\Scripts\python.exe
+```
+
 Example for fold 6:
 
 ```powershell
