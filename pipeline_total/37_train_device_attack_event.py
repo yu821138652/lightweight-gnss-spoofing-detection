@@ -26,6 +26,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--model", choices=("linear", "mlp"), default="linear")
     parser.add_argument("--label-key", choices=("y_event", "y_response_state"), default="y_event")
+    parser.add_argument(
+        "--label-transform", choices=("raw", "abnormal", "response_type", "direct"), default="raw",
+        help="raw keeps the selected label; abnormal maps response states 1/2 to one; response_type keeps states 1/2 and maps anomaly/direct to 0/1; direct maps state 2 to one",
+    )
     parser.add_argument("--num-classes", type=int, default=0, help="override class count; inferred from train/val when omitted")
     parser.add_argument("--hidden-dim", type=int, default=16)
     parser.add_argument("--dropout", type=float, default=0.1)
@@ -72,16 +76,25 @@ def seed_all(seed: int) -> None:
 class EventDataset(Dataset):
     REQUIRED = {"x", "device_id", "recording_id", "source_id", "endpoint_tow"}
 
-    def __init__(self, path: Path, label_key: str, include_device_ids: set[int] | None = None) -> None:
+    def __init__(self, path: Path, label_key: str, include_device_ids: set[int] | None = None, label_transform: str = "raw") -> None:
         with np.load(path, allow_pickle=False) as data:
             if missing := self.REQUIRED.union({label_key}).difference(data.files):
                 raise ValueError(f"{path} is missing {sorted(missing)}")
             self.x = torch.from_numpy(data["x"].astype(np.float32))
-            self.y = torch.from_numpy(data[label_key].astype(np.int64))
+            labels = data[label_key].astype(np.int64)
             self.device_id = torch.from_numpy(data["device_id"].astype(np.int64))
             self.recording_id = torch.from_numpy(data["recording_id"].astype(np.int64))
             self.source_id = torch.from_numpy(data["source_id"].astype(np.int64))
             self.endpoint_tow = torch.from_numpy(data["endpoint_tow"].astype(np.float64))
+        if label_transform == "abnormal":
+            labels = (labels > 0).astype(np.int64)
+        elif label_transform == "response_type":
+            labels = np.where(labels > 0, labels - 1, -1).astype(np.int64)
+        elif label_transform == "direct":
+            labels = (labels == 2).astype(np.int64)
+        elif label_transform != "raw":
+            raise ValueError(f"Unsupported label transform: {label_transform}")
+        self.y = torch.from_numpy(labels)
         if include_device_ids is not None:
             selected = torch.zeros(len(self.device_id), dtype=torch.bool)
             for device_id in include_device_ids:
@@ -274,7 +287,7 @@ def load_checkpoint_model(checkpoint_path: Path, device: torch.device, input_dim
 
 
 def calibrate_checkpoint(args: argparse.Namespace, device_names: dict[int, str], device: torch.device, include_device_ids: set[int] | None) -> None:
-    val = EventDataset(args.data_dir / "val.npz", args.label_key, include_device_ids)
+    val = EventDataset(args.data_dir / "val.npz", args.label_key, include_device_ids, args.label_transform)
     checkpoint, model = load_checkpoint_model(args.checkpoint, device, val.x.shape[1])
     if int(checkpoint.get("num_classes", 2)) != 2:
         raise ValueError("--calibrate-only currently applies only to binary checkpoints")
@@ -320,7 +333,7 @@ def main() -> None:
         include_device_ids = {named_device_ids[name] for name in args.include_devices}
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if args.test_only:
-        test = EventDataset(args.data_dir / "test.npz", args.label_key, include_device_ids)
+        test = EventDataset(args.data_dir / "test.npz", args.label_key, include_device_ids, args.label_transform)
         checkpoint, model = load_checkpoint_model(args.checkpoint, device, test.x.shape[1])
         args.output_dir.mkdir(parents=True, exist_ok=True)
         num_classes = int(checkpoint.get("num_classes", 2))
@@ -331,8 +344,8 @@ def main() -> None:
         calibrate_checkpoint(args, device_names, device, include_device_ids)
         return
 
-    train = EventDataset(args.data_dir / "train.npz", args.label_key, include_device_ids)
-    val = EventDataset(args.data_dir / "val.npz", args.label_key, include_device_ids)
+    train = EventDataset(args.data_dir / "train.npz", args.label_key, include_device_ids, args.label_transform)
+    val = EventDataset(args.data_dir / "val.npz", args.label_key, include_device_ids, args.label_transform)
     if len(val) == 0:
         raise ValueError("Validation is empty; use a tensor directory with an inner validation split")
     num_classes = infer_num_classes(train, val, requested=args.num_classes)
@@ -374,6 +387,7 @@ def main() -> None:
         "model": args.model, "input_dim": int(train.x.shape[1]), "hidden_dim": args.hidden_dim, "dropout": args.dropout,
         "best_val_macro_f1": best_score, "state_dict": best_state, "task": "device_attack_event",
         "label_key": args.label_key, "num_classes": num_classes,
+        "label_transform": args.label_transform,
         "label_semantics": metadata.get("label_semantics"), "included_device_names": args.include_devices,
     }, checkpoint_path)
     save_json(args.output_dir / "training_history.json", history)

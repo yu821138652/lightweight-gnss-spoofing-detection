@@ -44,6 +44,38 @@ Interpretation:
 - Fold 7 suggests direct-spoof recall can be strong in L1+L5 static attacks
   when the device response is directly observable.
 
+## Direct Override Pilot
+
+A hard two-stage tree was also tested:
+
+1. normal vs abnormal
+2. anomaly vs direct, only when stage 1 predicts abnormal
+
+It improved fold-6 direct recall but hurt anomaly recall and degraded fold-7
+direct recall, so it is not the preferred next step.  A softer variant works
+better: keep the flat three-class model as the base prediction, then use a
+binary direct-spoof expert only as an override when its direct probability is
+high.
+
+The current best pilot uses `direct_threshold=0.3` and `override_scope=all`.
+
+| fold | outer scenario | Macro-F1 | FAR | abnormal recall | anomaly recall | direct recall |
+|---|---|---:|---:|---:|---:|---:|
+| fold_6 | st_L5 | 0.8445 | 2.83% | 91.51% | 97.52% | 63.22% |
+| fold_7 | st_L1+L5 | 0.6588 | 0.22% | 97.19% | n/a | 97.19% |
+
+Compared with the flat three-class pilot, the direct override improves fold-6
+direct recall from 47.06% to 63.22% without increasing FAR.  Fold 7 is
+unchanged.  Across the two locally available folds, mean direct recall rises
+from 72.13% to 80.21%, while mean FAR remains 1.52%.
+
+This supports the next full experiment design:
+
+- base model: three-class response state
+- expert: binary direct-spoof detector
+- inference: direct expert can override the base prediction, with the threshold
+  selected on validation under FAR and abnormal-recall constraints
+
 ## Reproduction Commands
 
 Example for fold 6:
@@ -79,4 +111,22 @@ python pipeline_total/40_summarize_response_state_metrics.py `
     output/hierarchical_event_v1/static_response_state_v1/fold_6/mlp_sparse_initial30_device_h32/test_metrics_device_event.json `
     output/hierarchical_event_v1/static_response_state_v1/fold_7/mlp_sparse_initial30_device_h32/test_metrics_device_event.json `
   --output-csv output/hierarchical_event_v1/static_response_state_v1/static_response_state_summary.csv
+```
+
+Direct override example:
+
+```powershell
+python pipeline_total/37_train_device_attack_event.py `
+  --data-dir output/tensors/static_response_state_v1/fold_6/device_tensors_sparse_initial30_device `
+  --output-dir output/hierarchical_event_v1/static_response_state_v1/fold_6/direct_expert_mlp_h32 `
+  --label-key y_response_state --label-transform direct --num-classes 2 `
+  --model mlp --hidden-dim 32 --epochs 60 --batch-size 256 --patience 10
+
+python pipeline_total/42_eval_response_state_direct_override.py `
+  --data-dir output/tensors/static_response_state_v1/fold_6/device_tensors_sparse_initial30_device `
+  --output-dir output/hierarchical_event_v1/static_response_state_v1/fold_6/direct_override_mlp_h32_t030_all `
+  --split test `
+  --flat-checkpoint output/hierarchical_event_v1/static_response_state_v1/fold_6/mlp_sparse_initial30_device_h32/best_device_event_mlp.pt `
+  --direct-checkpoint output/hierarchical_event_v1/static_response_state_v1/fold_6/direct_expert_mlp_h32/best_device_event_mlp.pt `
+  --direct-threshold 0.3 --override-scope all
 ```
