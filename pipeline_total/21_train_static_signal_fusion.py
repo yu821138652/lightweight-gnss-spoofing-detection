@@ -20,6 +20,7 @@ import logging
 import random
 import re
 import sys
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Any
 
@@ -394,6 +395,7 @@ def export_test_misclassifications(
     output_path: Path,
     batch_size: int,
     device: torch.device,
+    export_all_predictions: bool = True,
 ) -> int:
     """Write endpoint-level false positives and false negatives for a locked test run."""
     trace_arrays = {
@@ -431,12 +433,17 @@ def export_test_misclassifications(
     predictions_path = output_path.with_name(output_path.name.replace("misclassifications", "predictions"))
     count = 0
     model.eval()
-    with output_path.open("w", newline="", encoding="utf-8-sig") as error_handle, \
-        predictions_path.open("w", newline="", encoding="utf-8-sig") as prediction_handle:
+    with ExitStack() as stack:
+        error_handle = stack.enter_context(output_path.open("w", newline="", encoding="utf-8-sig"))
         error_writer = csv.DictWriter(error_handle, fieldnames=fields)
-        prediction_writer = csv.DictWriter(prediction_handle, fieldnames=fields)
         error_writer.writeheader()
-        prediction_writer.writeheader()
+        prediction_writer = None
+        if export_all_predictions:
+            prediction_handle = stack.enter_context(
+                predictions_path.open("w", newline="", encoding="utf-8-sig")
+            )
+            prediction_writer = csv.DictWriter(prediction_handle, fieldnames=fields)
+            prediction_writer.writeheader()
         for start in range(0, len(test), batch_size):
             end = min(start + batch_size, len(test))
             logits = model(test.raw[start:end].to(device), test.stats[start:end].to(device))
@@ -467,7 +474,8 @@ def export_test_misclassifications(
                     "Prediction": prediction,
                     "PositiveProbability": float(probabilities[window_i, slot_i]),
                 }
-                prediction_writer.writerow(row)
+                if prediction_writer is not None:
+                    prediction_writer.writerow(row)
                 if label != prediction:
                     error_writer.writerow(row)
                     count += 1
@@ -769,6 +777,14 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="With --test-only, export endpoint-level false positives and false negatives as CSV.",
     )
+    parser.add_argument(
+        "--skip-test-predictions-export",
+        action="store_true",
+        help=(
+            "With --export-test-misclassifications, write only false positives/negatives instead "
+            "of also writing the full endpoint prediction CSV."
+        ),
+    )
     args = parser.parse_args()
     if not args.test_only and args.encoder is None:
         parser.error("--encoder is required for training and --dry-run")
@@ -776,6 +792,8 @@ def parse_args() -> argparse.Namespace:
         parser.error("--checkpoint is only valid with --test-only")
     if args.export_test_misclassifications and not args.test_only:
         parser.error("--export-test-misclassifications requires --test-only")
+    if args.skip_test_predictions_export and not args.export_test_misclassifications:
+        parser.error("--skip-test-predictions-export requires --export-test-misclassifications")
     if args.epochs < 1:
         parser.error("--epochs must be positive")
     if args.batch_size < 1:
@@ -886,6 +904,7 @@ def main() -> None:
                 errors_path,
                 args.batch_size,
                 device,
+                export_all_predictions=not args.skip_test_predictions_export,
             )
             LOG.info("exported %d test misclassifications to %s", error_count, errors_path)
         LOG.info("locked checkpoint test=%s", json.dumps(metrics))

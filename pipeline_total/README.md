@@ -154,6 +154,8 @@ python pipeline_total/20_build_static_timeblock_tensors.py `
   --label-config configs/preprocessing.yml
 ```
 
+另一种时间区间标签敏感性实验使用 `--label-policy reviewed_interval_all_positive --label-config configs/preprocessing.yml`。它遍历当前 outer protocol 中所有配置为 reviewed 的场景与 Session，并严格按时间定义新目标：TOW 位于 reviewed 欺骗闭区间内的全部行均为正类，不区分 L1/L5、设备、卫星或 `signal_id`；区间外均为负类。构建器会先确认中央 CSV 中没有落在这些区间之外的旧正类，并拒绝缺失配置、非 reviewed Session、非法/重叠区间、无效 TOW 和边界内状态不一致的接收机历元。它不修改中央 CSV/YAML，并在 `tensor_metadata.json` 中固化配置 SHA-256、完整录制级区间快照、原始/新增正类统计以及最终 train/val/test endpoint 类别数。新旧策略会同时改变训练、Validation 和 Test 标签语义，因此结果属于“目标定义敏感性对照”，不能表述为同一任务上的严格性能提升。
+
 ### 21_train_static_signal_fusion.py
 
 训练 raw 因果 TCN/LSTM + stats MLP 双分支。脚本会校验 raw/stats 的特征名、shape、mask、标签和设备元数据是否一致。
@@ -763,7 +765,7 @@ python pipeline_total/40_aggregate_mixed_signal_cv.py `
   --fold-assignment output/protocols/mixed_timeblock_outer_cv4_repro_v2/fold_assignment.csv
 ```
 
-`39` 输出逐折 overall、motion、Scenario、Session 与 device×motion×band 指标；`40` 输出 pooled、fold 等权和 Session 等权汇总。两者都只读取锁定结果，不参与模型选择或阈值调整。
+`39` 输出逐折 overall、motion、Scenario、Scenario×band、Session 与 device×motion×band 指标；`40` 输出 pooled、fold 等权和 Session 等权汇总。两者都只读取锁定结果，不参与模型选择或阈值调整。
 
 ### 可选 inner split 消融：reviewed-state-stratified
 
@@ -773,7 +775,7 @@ python pipeline_total/40_aggregate_mixed_signal_cv.py `
 python pipeline_total/19_generate_static_timeblock_protocol.py `
   --csv output/processed_gnss_data.csv `
   --source-recording-manifest output/protocols/mixed_timeblock_outer_cv4_v2/fold_assignment.csv `
-  --output-dir output/protocols/mixed_timeblock_outer_cv4_w5_state_stratified_repro_v1 `
+  --output-dir output/protocols/mixed_timeblock_outer_cv4_w5_state_stratified_repro_v2 `
   --data-scope mixed `
   --validation-mode reviewed-state-stratified `
   --label-config configs/preprocessing.yml `
@@ -783,7 +785,7 @@ python pipeline_total/19_generate_static_timeblock_protocol.py `
   --segment-gap-seconds 2
 ```
 
-该模式不能与 `--strict-validation` 同时使用。其四折 A/B 已完成：Validation 明显变高，但相同 outer test 的 Overall 与 Dynamic 均略降，`dy_L5` 仅小幅上升，未替代 strict-v2；完整审计与结果见 `docs/static_dynamic_signal_cv4_20260727.md`。后续张量、训练、test-only 和汇总命令与上文相同，只需统一替换协议、张量和训练目录，避免覆盖已锁定结果。
+该模式不能与 `--strict-validation` 同时使用。协议元数据会记录生成脚本 SHA256；长 attack prefix/suffix 在 attack 规模误差并列时，会与可行 clean 区间联合选择，避免相邻边界约束把单 Session clean validation 拉离 20%。修正版 v2 四折 A/B 已完成：Validation 明显变高，但相同 outer test 的 Overall 与 Dynamic 仍略低于 strict-v2，`dy_L5` 仅小幅上升，未替代 strict-v2。第一次 v1 生成中曾有一个 clean Session 只有 15.05% validation，不能再作为正式结果。完整审计与结果见 `docs/static_dynamic_signal_cv4_20260727.md`。后续张量、训练、test-only 和汇总命令与上文相同，只需统一替换协议、张量和训练目录，避免覆盖已锁定结果。
 
 ## 生成物策略
 

@@ -6,7 +6,7 @@ argmax decision rule, and reports pooled metrics for:
 
 * the complete test set;
 * static and dynamic motion subsets;
-* each Scenario and complete recording Session; and
+* each Scenario, Scenario x signal-band, and complete recording Session; and
 * receiver device x motion x signal-band groups.
 
 The recording metadata comes from ``window_trace_index.json``.  A separate
@@ -417,12 +417,21 @@ def main() -> None:
             ))
 
     for scenario in sorted(np.unique(active_scenario).tolist()):
-        selector = active_scenario == scenario
+        scenario_selector = active_scenario == scenario
         motion = "dynamic" if str(scenario).startswith("dy_") else "static"
         rows.append(_group_row(
-            "scenario", selector, y_true, y_pred, active_recordings,
+            "scenario", scenario_selector, y_true, y_pred, active_recordings,
             raw_feature_set, stats_feature_set, Scenario=str(scenario), motion=motion,
         ))
+        for band in ("L1", "L5"):
+            selector = scenario_selector & (active_band == band)
+            if not selector.any():
+                continue
+            rows.append(_group_row(
+                "scenario_band", selector, y_true, y_pred, active_recordings,
+                raw_feature_set, stats_feature_set, Scenario=str(scenario),
+                motion=motion, band=band,
+            ))
 
     session_rows: list[dict[str, object]] = []
     for recording_id in sorted(np.unique(active_recordings).tolist()):
