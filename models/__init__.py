@@ -1,6 +1,7 @@
 """Project-owned GNSS model implementations."""
 
 from .gnss_signal_baselines import (
+    BandMeanWindowClassifier,
     DeviceStatsGRU,
     DeviceStatsDLinear,
     DeviceStatsDepthwiseCNN,
@@ -23,6 +24,7 @@ from .gnss_signal_baselines import (
 )
 
 __all__ = [
+    "BandMeanWindowClassifier",
     "SignalMLP",
     "SignalGRU",
     "SignalTCN",

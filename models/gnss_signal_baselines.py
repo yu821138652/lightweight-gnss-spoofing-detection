@@ -1052,3 +1052,71 @@ class DeviceStatsTSMixer(nn.Module):
             x = x + time_mixer(time_norm(x).transpose(1, 2)).transpose(1, 2)
             x = x + feature_mixer(feature_norm(x))
         return self.classifier(x[:, -1])
+
+
+class BandMeanWindowClassifier(nn.Module):
+    """Classify one band-mean window into a four-way spoofing scene.
+
+    The input is the compact per-epoch band-mean representation built by
+    ``45_build_band_mean_window_tensors.py``: ``[batch, time_steps, feature]``
+    where each epoch stacks the L1 and L5 feature means plus two presence flags.
+    A short causal temporal encoder (shared with the per-signal fusion baselines)
+    summarizes the window; the endpoint embedding drives a single ``num_classes``
+    head.  Unlike the per-signal models this is a genuine window-level classifier
+    -- there is no signal axis and no pooling.
+    """
+
+    def __init__(
+        self,
+        input_dim: int,
+        time_steps: int,
+        encoder: str = "tcn",
+        hidden_dim: int = 32,
+        dropout: float = 0.1,
+        num_classes: int = 4,
+    ):
+        super().__init__()
+        if num_classes < 2:
+            raise ValueError(f"num_classes must be at least 2, got {num_classes}")
+        if time_steps < 2:
+            raise ValueError(f"time_steps must be at least 2, got {time_steps}")
+        self.input_dim = input_dim
+        self.time_steps = time_steps
+        self.encoder_name = encoder
+        self.num_classes = num_classes
+        if encoder == "lstm":
+            self.encoder = nn.LSTM(input_dim, hidden_dim, batch_first=True)
+        elif encoder == "gru":
+            self.encoder = nn.GRU(input_dim, hidden_dim, batch_first=True)
+        elif encoder == "tcn":
+            self.encoder = nn.Sequential(
+                CausalConv1d(input_dim, hidden_dim, kernel_size=3),
+                nn.GELU(),
+                nn.Dropout(dropout),
+                CausalConv1d(hidden_dim, hidden_dim, kernel_size=3, dilation=2),
+                nn.GELU(),
+            )
+        else:
+            raise ValueError(f"Unknown encoder: {encoder}")
+        self.classifier = nn.Sequential(
+            nn.LayerNorm(hidden_dim),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, num_classes),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if x.ndim != 3 or tuple(x.shape[-2:]) != (self.time_steps, self.input_dim):
+            raise ValueError(
+                f"Expected [batch, {self.time_steps}, {self.input_dim}], got {tuple(x.shape)}"
+            )
+        if self.encoder_name == "lstm":
+            _, (hidden, _) = self.encoder(x)
+            embedding = hidden[-1]
+        elif self.encoder_name == "gru":
+            _, hidden = self.encoder(x)
+            embedding = hidden[-1]
+        else:
+            embedding = self.encoder(x.transpose(1, 2))[:, :, -1]
+        return self.classifier(embedding)
