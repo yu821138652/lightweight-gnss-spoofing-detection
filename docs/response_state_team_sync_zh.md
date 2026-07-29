@@ -75,7 +75,7 @@ min_val_abnormal_recall = 0.90
 
 ## 4. 当前已有结果
 
-本地目前至少已有 `fold_1`、`fold_6`、`fold_7` 的 signal tensor 目录。此前完整跑完并记录的是 `fold_6` 和 `fold_7`。
+本地 7 个 signal tensor 目录已经补齐。当前响应状态流水中，`fold_1`、`fold_2`、`fold_4`、`fold_5`、`fold_6`、`fold_7` 有有效 outer-test 结果；`fold_3` 因为 outer test 录制从同一次 L5 攻击中途开始，无法建立 30 窗口初始正常基线，当前 `initial_baseline_delta` 协议会把 test 全部排除。因此当前主结果先按 6 个有效 fold 汇总，`fold_3` 需要单独决定协议处理方式。
 
 平坦三分类结果：
 
@@ -101,12 +101,38 @@ direct recall: 81.43%
 anomaly recall: 97.52%  # 只在有 anomaly support 的 fold_6 上统计
 ```
 
+6 个有效 fold 的 validation 校准 direct override 汇总：
+
+```text
+supported Macro-F1: 0.9485
+原始 Macro-F1: 0.7279
+FAR: 1.28%
+abnormal recall: 94.04%
+direct recall: 93.39%
+anomaly recall: 73.76%  # 只统计有 anomaly support 的 fold
+```
+
+其中 `supported Macro-F1` 只平均 test 中真实存在的类别。很多静态 fold 只有 `normal/direct`，没有 `anomaly`，如果把不存在的 anomaly 类也按 0 分计入，原始 Macro-F1 会被人为压低到约 0.66。因此同步和论文表格中建议同时报告 `supported Macro-F1` 和原始 Macro-F1，并解释类别 support。
+
+逐 fold 结果：
+
+| fold | outer 场景 | supported Macro-F1 | 原始 Macro-F1 | FAR | abnormal recall | anomaly recall | direct recall |
+|---|---|---:|---:|---:|---:|---:|---:|
+| fold_1 | st_L1 | 0.9906 | 0.6604 | 3.41% | 99.88% | n/a | 99.88% |
+| fold_2 | st_L5 | 0.8670 | 0.8670 | 0.36% | 76.13% | 50.00% | 98.62% |
+| fold_4 | st_L1+L5 | 0.9971 | 0.6648 | 0.50% | 100.00% | n/a | 100.00% |
+| fold_5 | st_L1 | 0.9941 | 0.6627 | 0.31% | 99.00% | n/a | 99.00% |
+| fold_6 | st_L5 | 0.8529 | 0.8529 | 2.85% | 91.73% | 97.52% | 65.36% |
+| fold_7 | st_L1+L5 | 0.9890 | 0.6593 | 0.28% | 97.51% | n/a | 97.51% |
+
 结论：
 
 - 设备异常检测本身已经比较强。
 - Watch L5 的攻击关联异常能够被检出，不是单纯靠误报。
 - direct spoof 在 fold_6 原本明显漏检，加入 direct expert 后有明显改善。
-- 仍需补齐完整静态 7-fold，不能只凭 fold_6/fold_7 下最终结论。
+- 仍需处理 fold_3 的“无初始正常基线”问题，不能直接把当前结果表述为完整 7-fold。
+- fold_2 的 anomaly recall 只有 50.00%，说明 new_building L5 Watch 关联异常标注/特征仍需复核。
+- fold_6 的 direct recall 虽已从 47.06% 提升到 65.36%，但仍是 direct 识别的主要薄弱点。
 
 ## 5. 需要继续做什么
 

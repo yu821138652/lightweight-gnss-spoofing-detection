@@ -72,6 +72,42 @@ direct recall from 47.06% to 65.36% with almost unchanged FAR.  Fold 7 is not
 hurt.  Across the two locally available folds, mean direct recall rises from
 72.13% to 81.43%, while mean FAR remains low at 1.57%.
 
+## Six Valid Static Folds
+
+After rebuilding signal tensors, six folds currently have valid outer-test
+response-state results under the 30-window initial-baseline protocol:
+`fold_1`, `fold_2`, `fold_4`, `fold_5`, `fold_6`, and `fold_7`.
+
+`fold_3` is not valid under this protocol because its outer test recording
+(`new_building/st_L5/2025.07.29.20.36`) starts inside the same L5 attack event.
+The 30-window initial baseline is therefore not independently normal, and the
+builder excludes the entire test stream.  This fold needs a separate protocol
+decision before it can be included.
+
+For the six valid folds, validation-calibrated direct override gives:
+
+```text
+supported Macro-F1: 0.9485
+raw Macro-F1: 0.7279
+FAR: 1.28%
+abnormal recall: 94.04%
+direct recall: 93.39%
+anomaly recall: 73.76%  # averaged only over folds with anomaly support
+```
+
+`supported Macro-F1` averages only classes present in the test split.  Raw
+Macro-F1 is still retained, but it is artificially low in static folds whose
+outer test contains no anomaly class.
+
+| fold | outer scenario | supported Macro-F1 | raw Macro-F1 | FAR | abnormal recall | anomaly recall | direct recall |
+|---|---|---:|---:|---:|---:|---:|---:|
+| fold_1 | st_L1 | 0.9906 | 0.6604 | 3.41% | 99.88% | n/a | 99.88% |
+| fold_2 | st_L5 | 0.8670 | 0.8670 | 0.36% | 76.13% | 50.00% | 98.62% |
+| fold_4 | st_L1+L5 | 0.9971 | 0.6648 | 0.50% | 100.00% | n/a | 100.00% |
+| fold_5 | st_L1 | 0.9941 | 0.6627 | 0.31% | 99.00% | n/a | 99.00% |
+| fold_6 | st_L5 | 0.8529 | 0.8529 | 2.85% | 91.73% | 97.52% | 65.36% |
+| fold_7 | st_L1+L5 | 0.9890 | 0.6593 | 0.28% | 97.51% | n/a | 97.51% |
+
 This supports the next full experiment design:
 
 - base model: three-class response state

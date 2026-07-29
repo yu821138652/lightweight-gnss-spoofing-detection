@@ -162,6 +162,7 @@ def multiclass_metrics(y_true: np.ndarray, y_pred: np.ndarray, num_classes: int)
         "samples": int(len(y_true)),
         "accuracy": float(accuracy_score(y_true, y_pred)) if len(y_true) else 0.0,
         "macro_f1": float(f1_score(y_true, y_pred, labels=labels, average="macro", zero_division=0)),
+        "supported_macro_f1": float(np.mean(f1[support > 0])) if np.any(support > 0) else 0.0,
         "far": float(false_alarm.sum() / normal.sum()) if normal.sum() else 0.0,
         "abnormal_recall": float(((y_pred != 0) & abnormal).sum() / abnormal.sum()) if abnormal.sum() else 0.0,
         "recall": float(((y_pred != 0) & abnormal).sum() / abnormal.sum()) if abnormal.sum() else 0.0,

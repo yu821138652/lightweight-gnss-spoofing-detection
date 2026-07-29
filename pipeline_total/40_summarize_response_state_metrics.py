@@ -17,9 +17,19 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def supported_macro_f1(row: dict[str, Any]) -> float:
+    values = [
+        float(item["f1"])
+        for item in row["per_class"].values()
+        if float(item["support"]) > 0
+    ]
+    return mean(values) if values else 0.0
+
+
 def short_metrics(row: dict[str, Any]) -> dict[str, float]:
     return {
         "macro_f1": float(row["macro_f1"]),
+        "supported_macro_f1": float(row.get("supported_macro_f1", supported_macro_f1(row))),
         "far": float(row["far"]),
         "abnormal_recall": float(row["abnormal_recall"]),
         "anomaly_recall": float(row["per_class"]["1"]["recall"]),
@@ -58,6 +68,7 @@ def aggregate_overall(rows: list[dict[str, str | float]]) -> dict[str, float]:
         key: mean(float(row[key]) for row in selected)
         for key in ("macro_f1", "far", "abnormal_recall", "direct_recall")
     }
+    result["supported_macro_f1"] = mean(float(row["supported_macro_f1"]) for row in selected)
     anomaly_rows = [row for row in selected if float(row["anomaly_support"]) > 0]
     result["anomaly_recall"] = mean(float(row["anomaly_recall"]) for row in anomaly_rows) if anomaly_rows else 0.0
     return result
@@ -74,7 +85,7 @@ def main() -> None:
     if args.output_csv:
         args.output_csv.parent.mkdir(parents=True, exist_ok=True)
         fieldnames = [
-            "fold", "group_type", "group", "macro_f1", "far", "abnormal_recall",
+            "fold", "group_type", "group", "macro_f1", "supported_macro_f1", "far", "abnormal_recall",
             "anomaly_recall", "anomaly_support", "direct_recall", "direct_support",
         ]
         with args.output_csv.open("w", encoding="utf-8", newline="") as handle:
