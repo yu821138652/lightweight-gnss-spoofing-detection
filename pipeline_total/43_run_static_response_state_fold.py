@@ -126,6 +126,8 @@ def main() -> None:
         "--max-val-far", str(args.max_val_far),
         "--min-val-abnormal-recall", str(args.min_val_abnormal_recall),
         "--override-scope", "all",
+        "--fold", args.fold.removeprefix("fold_"),
+        "--predictions-csv", str(override_dir / "test_response_state_predictions.csv"),
     ], args.dry_run)
 
 

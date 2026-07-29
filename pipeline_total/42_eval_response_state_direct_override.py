@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import importlib.util
 import json
 from pathlib import Path
@@ -14,6 +15,7 @@ import torch
 
 ROOT = Path(__file__).resolve().parents[1]
 TRAIN_SCRIPT = ROOT / "pipeline_total" / "37_train_device_attack_event.py"
+STATE_NAMES = {0: "normal", 1: "anomaly", 2: "direct"}
 
 
 def parse_args() -> argparse.Namespace:
@@ -30,6 +32,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-val-abnormal-recall", type=float, default=0.0)
     parser.add_argument("--override-scope", choices=("abnormal", "all"), default="abnormal")
     parser.add_argument("--batch-size", type=int, default=256)
+    parser.add_argument("--fold", type=str, default="", help="Optional outer-fold tag written to the prediction CSV.")
+    parser.add_argument(
+        "--predictions-csv", type=Path,
+        help="Optional per-window export for downstream scene/response fusion.",
+    )
     return parser.parse_args()
 
 
@@ -98,6 +105,76 @@ def score_for_selection(result: dict[str, Any]) -> tuple[float, float, float]:
     )
 
 
+def export_predictions(
+    output_path: Path,
+    data: Any,
+    flat_probability: np.ndarray,
+    direct_probability: np.ndarray,
+    predicted: np.ndarray,
+    override: np.ndarray,
+    device_names: dict[int, str],
+    metadata: dict[str, Any],
+    fold: str,
+) -> None:
+    """Write traceable response-state predictions for the late-fusion evaluator."""
+    if len(data) != len(predicted):
+        raise ValueError("Prediction count differs from response-state data")
+    recording_names = train_mod_recording_names(metadata)
+    fields = [
+        "fold", "recording_id", "recording_name", "device_id", "device_name", "source_id", "endpoint_tow",
+        "true_state", "true_state_name", "flat_pred_state", "flat_pred_state_name",
+        "pred_state", "pred_state_name", "direct_probability", "direct_override",
+        *[f"flat_prob_{STATE_NAMES[c]}" for c in range(3)],
+    ]
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    labels = data.y.numpy()
+    device_ids = data.device_id.numpy()
+    recording_ids = data.recording_id.numpy()
+    source_ids = data.source_id.numpy()
+    endpoint_tow = data.endpoint_tow.numpy()
+    flat_predicted = flat_probability.argmax(axis=1).astype(np.int64)
+    with output_path.open("w", newline="", encoding="utf-8-sig") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fields)
+        writer.writeheader()
+        for index in range(len(labels)):
+            device_id = int(device_ids[index])
+            recording_id = int(recording_ids[index])
+            true_state = int(labels[index])
+            flat_state = int(flat_predicted[index])
+            final_state = int(predicted[index])
+            row = {
+                "fold": fold,
+                "recording_id": recording_id,
+                "recording_name": recording_names.get(recording_id, str(recording_id)),
+                "device_id": device_id,
+                "device_name": device_names.get(device_id, str(device_id)),
+                "source_id": int(source_ids[index]),
+                "endpoint_tow": float(endpoint_tow[index]),
+                "true_state": true_state,
+                "true_state_name": STATE_NAMES[true_state],
+                "flat_pred_state": flat_state,
+                "flat_pred_state_name": STATE_NAMES[flat_state],
+                "pred_state": final_state,
+                "pred_state_name": STATE_NAMES[final_state],
+                "direct_probability": float(direct_probability[index, 1]),
+                "direct_override": bool(override[index]),
+            }
+            row.update({f"flat_prob_{STATE_NAMES[c]}": float(flat_probability[index, c]) for c in range(3)})
+            writer.writerow(row)
+
+
+def train_mod_recording_names(metadata: dict[str, Any]) -> dict[int, str]:
+    """Local counterpart of the train helper, kept explicit for CSV provenance."""
+    rows = metadata.get("recordings", [])
+    if not isinstance(rows, list):
+        return {}
+    return {
+        index: "/".join(str(row.get(key, "")) for key in ("Environment", "Scenario", "Session"))
+        for index, row in enumerate(rows)
+        if isinstance(row, dict)
+    }
+
+
 def main() -> None:
     args = parse_args()
     if not 0.0 < args.direct_threshold < 1.0:
@@ -149,6 +226,9 @@ def main() -> None:
         }
     flat_probability = train_mod.probabilities(flat_model, data, device, args.batch_size)
     direct_probability = train_mod.probabilities(direct_model, data, device, args.batch_size)
+    predicted, override = predict_override(
+        flat_probability, direct_probability, selected_threshold, args.override_scope,
+    )
     result = evaluate_override(
         train_mod, data, flat_probability, direct_probability, selected_threshold, args.override_scope,
         device_names, metadata, args.split, args.flat_checkpoint, args.direct_checkpoint,
@@ -163,6 +243,12 @@ def main() -> None:
         (args.output_dir / "direct_override_threshold_calibration.json").write_text(
             json.dumps(calibration, indent=2), encoding="utf-8"
         )
+    if args.predictions_csv is not None:
+        export_predictions(
+            args.predictions_csv, data, flat_probability, direct_probability, predicted, override,
+            device_names, metadata, args.fold,
+        )
+        result["predictions_csv"] = str(args.predictions_csv)
     output_path = args.output_dir / f"{args.split}_metrics_response_state_direct_override.json"
     output_path.write_text(json.dumps(result, indent=2), encoding="utf-8")
     print(json.dumps({
