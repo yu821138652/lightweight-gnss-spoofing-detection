@@ -1,0 +1,5 @@
+Environment,Scenario,Session,DeviceName,response_state,observable_band,target_band,start_tow,end_tow,source,note
+new_building,st_L5,2025.07.29.20.16_新主楼,Google_Pixel_Watch1,attack_associated_anomaly,L1,L5,217683,218305,candidate_manual_review,L5-only event; Watch has no L5 and is labeled as L1 attack-associated anomaly for feasibility testing
+new_building,st_L5,2025.07.29.20.16_新主楼,Google_Pixel_Watch2,attack_associated_anomaly,L1,L5,217683,218305,candidate_manual_review,L5-only event; Watch has no L5 and is labeled as L1 attack-associated anomaly for feasibility testing
+playground,st_L5,2025.07.30.09.48_2025.07.30.10.14,Google_Pixel_Watch1,attack_associated_anomaly,L1,L5,266310,267054,manual_review,L5-only event; reviewed plot shows L1 C/N0 suppression on Watch without L5 capability
+playground,st_L5,2025.07.30.09.48_2025.07.30.10.14,Google_Pixel_Watch2,attack_associated_anomaly,L1,L5,266310,267054,manual_review,L5-only event; reviewed plot shows L1 C/N0 suppression on Watch without L5 capability

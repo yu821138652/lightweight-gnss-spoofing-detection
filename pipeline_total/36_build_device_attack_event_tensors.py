@@ -9,6 +9,7 @@ frequency, so L1 suppression can be attack evidence during an L5-only event.
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 from pathlib import Path
 from typing import Any
@@ -19,6 +20,12 @@ import yaml
 
 SPLITS = ("train", "val", "test")
 ROOT = Path(__file__).resolve().parents[1]
+RESPONSE_STATE_TO_ID = {
+    "normal": 0,
+    "no_observable_response": 0,
+    "attack_associated_anomaly": 1,
+    "direct_spoof": 2,
+}
 REQUIRED_STATS = (
     "Cn0DbHzLastW5", "Cn0DbHzSlopeW5", "AgcDbLastW5", "AgcDbStdW5",
     "ReceivedSvTimeUncertaintyNanosStdW5", "IsL5", "SignalHistoryRatioW5",
@@ -30,6 +37,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--signal-data-dir", type=Path, required=True)
     parser.add_argument("--label-config", type=Path, default=ROOT / "configs" / "preprocessing.yml")
+    parser.add_argument("--response-labels", type=Path, default=ROOT / "docs" / "device_response_intervals.csv")
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument(
         "--device-aggregate-profile", choices=("robust", "sparse_extreme"), default="robust",
@@ -59,6 +67,42 @@ def read_json(path: Path) -> Any:
         return json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
         raise ValueError(f"Invalid JSON: {path}") from exc
+
+
+def read_response_rows(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    required = {
+        "Environment", "Scenario", "Session", "DeviceName", "response_state",
+        "start_tow", "end_tow",
+    }
+    rows: list[dict[str, Any]] = []
+    with path.open("r", encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle)
+        if reader.fieldnames is None:
+            return []
+        if missing := required.difference(reader.fieldnames):
+            raise ValueError(f"{path} missing response-label columns {sorted(missing)}")
+        for line_no, row in enumerate(reader, start=2):
+            state = str(row["response_state"]).strip()
+            if state not in RESPONSE_STATE_TO_ID:
+                raise ValueError(f"Unsupported response_state {state!r} at {path}:{line_no}")
+            start = float(row["start_tow"])
+            end = float(row["end_tow"])
+            if end < start:
+                raise ValueError(f"Descending response interval at {path}:{line_no}")
+            rows.append({
+                "Environment": str(row["Environment"]).strip(),
+                "Scenario": str(row["Scenario"]).strip(),
+                "Session": str(row["Session"]).strip(),
+                "DeviceName": str(row["DeviceName"]).strip(),
+                "state_id": RESPONSE_STATE_TO_ID[state],
+                "response_state": state,
+                "start_tow": start,
+                "end_tow": end,
+                "line_no": line_no,
+            })
+    return rows
 
 
 def reduce(values: np.ndarray, kind: str) -> float:
@@ -163,6 +207,39 @@ def labels_from_interval(recording_ids: np.ndarray, tows: np.ndarray, intervals:
     return labels
 
 
+def response_labels_from_rows(
+    recording_ids: np.ndarray,
+    source_ids: np.ndarray,
+    tows: np.ndarray,
+    trace: dict[str, Any],
+    response_rows: list[dict[str, Any]],
+) -> np.ndarray:
+    labels = np.zeros(len(recording_ids), dtype=np.int64)
+    if not response_rows:
+        return labels
+    sources = trace.get("sources")
+    recordings = trace.get("recordings")
+    if not isinstance(sources, list) or not isinstance(recordings, list):
+        raise ValueError("window_trace_index.json must contain source and recording indexes")
+    rules: dict[tuple[str, str, str, str], list[dict[str, Any]]] = {}
+    for row in response_rows:
+        key = (row["Environment"], row["Scenario"], row["Session"], row["DeviceName"])
+        rules.setdefault(key, []).append(row)
+    for index, (recording_id, source_id, tow) in enumerate(zip(recording_ids, source_ids, tows)):
+        source = sources[int(source_id)]
+        recording = recordings[int(recording_id)]
+        key = (
+            str(recording["Environment"]),
+            str(recording["Scenario"]),
+            str(recording["Session"]),
+            str(source["DeviceName"]),
+        )
+        for rule in rules.get(key, []):
+            if rule["start_tow"] <= float(tow) <= rule["end_tow"]:
+                labels[index] = max(labels[index], int(rule["state_id"]))
+    return labels
+
+
 def select_feature_indices(names: list[str], feature_set: str) -> list[int]:
     if feature_set == "all":
         selected = names
@@ -187,7 +264,15 @@ def select_feature_indices(names: list[str], feature_set: str) -> list[int]:
     return [names.index(name) for name in selected]
 
 
-def load_device_split(signal_dir: Path, split: str, index: dict[str, int], intervals: dict[int, list[tuple[float, float]]], profile: str) -> tuple[dict[str, np.ndarray], list[str]]:
+def load_device_split(
+    signal_dir: Path,
+    split: str,
+    index: dict[str, int],
+    intervals: dict[int, list[tuple[float, float]]],
+    trace: dict[str, Any],
+    response_rows: list[dict[str, Any]],
+    profile: str,
+) -> tuple[dict[str, np.ndarray], list[str]]:
     raw_path = signal_dir / "raw" / f"{split}.npz"
     stats_path = signal_dir / "stats" / f"{split}.npz"
     with np.load(raw_path, allow_pickle=False) as raw, np.load(stats_path, allow_pickle=False) as stats:
@@ -209,16 +294,20 @@ def load_device_split(signal_dir: Path, split: str, index: dict[str, int], inter
             rows.append(features)
         x = np.stack(rows) if rows else np.empty((0, 0), dtype=np.float32)
         recording_ids = raw["recording_id"].astype(np.int64)
+        source_ids = raw["source_id"].astype(np.int64)
         event_y = labels_from_interval(recording_ids, raw["endpoint_tow"], intervals)
         direct_positive = (raw["y"] == 1) & raw["mask"]
         if np.any(direct_positive.any(axis=1) & (event_y == 0)):
             raise ValueError(f"Direct target-band positives fall outside an event interval in {split}")
+        response_y = response_labels_from_rows(recording_ids, source_ids, raw["endpoint_tow"], trace, response_rows)
+        response_y[direct_positive.any(axis=1)] = RESPONSE_STATE_TO_ID["direct_spoof"]
         return {
             "x": x,
             "y_event": event_y,
+            "y_response_state": response_y,
             "device_id": raw["device_id"].astype(np.int64),
             "recording_id": recording_ids,
-            "source_id": raw["source_id"].astype(np.int64),
+            "source_id": source_ids,
             "endpoint_tow": raw["endpoint_tow"].astype(np.float64),
             "endpoint_utc_millis": raw["endpoint_utc_millis"].astype(np.float64),
         }, names or []
@@ -379,10 +468,13 @@ def main() -> None:
     trace = read_json(args.signal_data_dir / "window_trace_index.json")
     config = yaml.safe_load(args.label_config.read_text(encoding="utf-8"))
     intervals = reviewed_intervals(trace, config)
+    response_rows = read_response_rows(args.response_labels)
     datasets: dict[str, dict[str, np.ndarray]] = {}
     feature_names: list[str] | None = None
     for split in SPLITS:
-        data, candidate_names = load_device_split(args.signal_data_dir, split, index, intervals, args.device_aggregate_profile)
+        data, candidate_names = load_device_split(
+            args.signal_data_dir, split, index, intervals, trace, response_rows, args.device_aggregate_profile,
+        )
         if feature_names is None and candidate_names:
             feature_names = candidate_names
         elif candidate_names and feature_names != candidate_names:
@@ -446,8 +538,10 @@ def main() -> None:
     metadata = {
         "task": "device_attack_event",
         "label_semantics": "reviewed session attack interval independent of direct target frequency",
+        "response_label_semantics": "0=normal/no observable response, 1=attack-associated anomaly, 2=direct spoof",
         "signal_data_dir": str(args.signal_data_dir),
         "label_config": str(args.label_config),
+        "response_labels": str(args.response_labels),
         "feature_set": args.feature_set,
         "device_aggregate_profile": args.device_aggregate_profile,
         "causal_reference_windows": args.causal_reference_windows,
@@ -457,8 +551,17 @@ def main() -> None:
         "feature_names": feature_names,
         "device_mapping": read_json(args.signal_data_dir / "device_mapping.json"),
         "recordings": trace["recordings"],
+        "response_label_rows": response_rows,
         "splits": {
-            split: {"windows": int(len(data["x"])), "positive": int(data["y_event"].sum()), "negative": int(len(data["y_event"]) - data["y_event"].sum())}
+            split: {
+                "windows": int(len(data["x"])),
+                "positive": int(data["y_event"].sum()),
+                "negative": int(len(data["y_event"]) - data["y_event"].sum()),
+                "response_state_counts": {
+                    str(state): int((data["y_response_state"] == state).sum())
+                    for state in range(3)
+                },
+            }
             for split, data in datasets.items()
         },
     }

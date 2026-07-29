@@ -15,7 +15,7 @@ from typing import Any
 
 import numpy as np
 import torch
-from sklearn.metrics import confusion_matrix, f1_score, precision_score, recall_score
+from sklearn.metrics import accuracy_score, confusion_matrix, f1_score, precision_recall_fscore_support, precision_score, recall_score
 from torch import nn
 from torch.utils.data import DataLoader, Dataset
 
@@ -25,6 +25,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--data-dir", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--model", choices=("linear", "mlp"), default="linear")
+    parser.add_argument("--label-key", choices=("y_event", "y_response_state"), default="y_event")
+    parser.add_argument(
+        "--label-transform", choices=("raw", "abnormal", "response_type", "direct"), default="raw",
+        help="raw keeps the selected label; abnormal maps response states 1/2 to one; response_type keeps states 1/2 and maps anomaly/direct to 0/1; direct maps state 2 to one",
+    )
+    parser.add_argument("--num-classes", type=int, default=0, help="override class count; inferred from train/val when omitted")
     parser.add_argument("--hidden-dim", type=int, default=16)
     parser.add_argument("--dropout", type=float, default=0.1)
     parser.add_argument("--epochs", type=int, default=50)
@@ -44,6 +50,8 @@ def parse_args() -> argparse.Namespace:
     args = parser.parse_args()
     if min(args.hidden_dim, args.epochs, args.batch_size, args.patience) < 1 or args.num_workers < 0:
         parser.error("training dimensions and counts must be positive")
+    if args.num_classes < 0:
+        parser.error("num-classes must be non-negative")
     if not 0.0 <= args.dropout < 1.0:
         parser.error("dropout must be in [0, 1)")
     if (args.test_only or args.calibrate_only) and args.checkpoint is None:
@@ -66,18 +74,27 @@ def seed_all(seed: int) -> None:
 
 
 class EventDataset(Dataset):
-    REQUIRED = {"x", "y_event", "device_id", "recording_id", "source_id", "endpoint_tow"}
+    REQUIRED = {"x", "device_id", "recording_id", "source_id", "endpoint_tow"}
 
-    def __init__(self, path: Path, include_device_ids: set[int] | None = None) -> None:
+    def __init__(self, path: Path, label_key: str, include_device_ids: set[int] | None = None, label_transform: str = "raw") -> None:
         with np.load(path, allow_pickle=False) as data:
-            if missing := self.REQUIRED.difference(data.files):
+            if missing := self.REQUIRED.union({label_key}).difference(data.files):
                 raise ValueError(f"{path} is missing {sorted(missing)}")
             self.x = torch.from_numpy(data["x"].astype(np.float32))
-            self.y = torch.from_numpy(data["y_event"].astype(np.int64))
+            labels = data[label_key].astype(np.int64)
             self.device_id = torch.from_numpy(data["device_id"].astype(np.int64))
             self.recording_id = torch.from_numpy(data["recording_id"].astype(np.int64))
             self.source_id = torch.from_numpy(data["source_id"].astype(np.int64))
             self.endpoint_tow = torch.from_numpy(data["endpoint_tow"].astype(np.float64))
+        if label_transform == "abnormal":
+            labels = (labels > 0).astype(np.int64)
+        elif label_transform == "response_type":
+            labels = np.where(labels > 0, labels - 1, -1).astype(np.int64)
+        elif label_transform == "direct":
+            labels = (labels == 2).astype(np.int64)
+        elif label_transform != "raw":
+            raise ValueError(f"Unsupported label transform: {label_transform}")
+        self.y = torch.from_numpy(labels)
         if include_device_ids is not None:
             selected = torch.zeros(len(self.device_id), dtype=torch.bool)
             for device_id in include_device_ids:
@@ -88,6 +105,14 @@ class EventDataset(Dataset):
             self.recording_id = self.recording_id[selected]
             self.source_id = self.source_id[selected]
             self.endpoint_tow = self.endpoint_tow[selected]
+        valid = self.y >= 0
+        if not torch.all(valid):
+            self.x = self.x[valid]
+            self.y = self.y[valid]
+            self.device_id = self.device_id[valid]
+            self.recording_id = self.recording_id[valid]
+            self.source_id = self.source_id[valid]
+            self.endpoint_tow = self.endpoint_tow[valid]
         if self.x.ndim != 2 or len(self.x) != len(self.y):
             raise ValueError(f"Invalid device tensor shapes in {path}")
 
@@ -99,21 +124,21 @@ class EventDataset(Dataset):
 
 
 class EventMLP(nn.Module):
-    def __init__(self, input_dim: int, hidden_dim: int, dropout: float) -> None:
+    def __init__(self, input_dim: int, hidden_dim: int, dropout: float, num_classes: int) -> None:
         super().__init__()
         self.layers = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim), nn.GELU(), nn.Dropout(dropout), nn.Linear(hidden_dim, 2)
+            nn.Linear(input_dim, hidden_dim), nn.GELU(), nn.Dropout(dropout), nn.Linear(hidden_dim, num_classes)
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.layers(x)
 
 
-def make_model(kind: str, input_dim: int, hidden_dim: int, dropout: float) -> nn.Module:
-    return nn.Linear(input_dim, 2) if kind == "linear" else EventMLP(input_dim, hidden_dim, dropout)
+def make_model(kind: str, input_dim: int, hidden_dim: int, dropout: float, num_classes: int) -> nn.Module:
+    return nn.Linear(input_dim, num_classes) if kind == "linear" else EventMLP(input_dim, hidden_dim, dropout, num_classes)
 
 
-def metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict[str, float | int]:
+def binary_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict[str, float | int]:
     tn, fp, fn, tp = confusion_matrix(y_true, y_pred, labels=[0, 1]).ravel()
     return {
         "samples": int(len(y_true)), "negative_support": int((y_true == 0).sum()), "positive_support": int((y_true == 1).sum()),
@@ -125,49 +150,151 @@ def metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict[str, float | int]:
     }
 
 
+def multiclass_metrics(y_true: np.ndarray, y_pred: np.ndarray, num_classes: int) -> dict[str, Any]:
+    labels = list(range(num_classes))
+    precision, recall, f1, support = precision_recall_fscore_support(
+        y_true, y_pred, labels=labels, zero_division=0,
+    )
+    normal = y_true == 0
+    abnormal = y_true != 0
+    false_alarm = normal & (y_pred != 0)
+    result: dict[str, Any] = {
+        "samples": int(len(y_true)),
+        "accuracy": float(accuracy_score(y_true, y_pred)) if len(y_true) else 0.0,
+        "macro_f1": float(f1_score(y_true, y_pred, labels=labels, average="macro", zero_division=0)),
+        "supported_macro_f1": float(np.mean(f1[support > 0])) if np.any(support > 0) else 0.0,
+        "far": float(false_alarm.sum() / normal.sum()) if normal.sum() else 0.0,
+        "abnormal_recall": float(((y_pred != 0) & abnormal).sum() / abnormal.sum()) if abnormal.sum() else 0.0,
+        "recall": float(((y_pred != 0) & abnormal).sum() / abnormal.sum()) if abnormal.sum() else 0.0,
+        "confusion_matrix": confusion_matrix(y_true, y_pred, labels=labels).astype(int).tolist(),
+        "per_class": {},
+    }
+    for class_id in labels:
+        result["per_class"][str(class_id)] = {
+            "support": int(support[class_id]),
+            "precision": float(precision[class_id]),
+            "recall": float(recall[class_id]),
+            "f1": float(f1[class_id]),
+        }
+    if num_classes == 2:
+        result.update(binary_metrics(y_true, y_pred))
+    return result
+
+
+def infer_num_classes(*datasets: EventDataset, requested: int = 0) -> int:
+    if requested:
+        return requested
+    maxima = [int(data.y.max()) for data in datasets if len(data)]
+    if not maxima:
+        raise ValueError("Cannot infer class count from empty datasets")
+    return max(maxima) + 1
+
+
 @torch.no_grad()
 def probabilities(model: nn.Module, data: EventDataset, device: torch.device, batch_size: int) -> np.ndarray:
     model.eval()
     batches = [model(data.x[start:start + batch_size].to(device)).cpu() for start in range(0, len(data), batch_size)]
-    return torch.cat(batches).softmax(dim=1)[:, 1].numpy() if batches else np.empty(0, dtype=np.float64)
+    return torch.cat(batches).softmax(dim=1).numpy() if batches else np.empty((0, 0), dtype=np.float64)
 
 
-def evaluate_probability(data: EventDataset, probability: np.ndarray, threshold: float, device_names: dict[int, str]) -> dict[str, Any]:
-    if len(probability) != len(data):
-        raise ValueError("Probability count differs from event windows")
-    predicted = (probability >= threshold).astype(np.int64)
-    labels = data.y.numpy()
-    result: dict[str, Any] = {"alarm_threshold": threshold, "overall": metrics(labels, predicted)}
-    by_device: dict[str, dict[str, float | int]] = {}
-    device_ids = data.device_id.numpy()
-    for device_id in np.unique(device_ids):
-        selected = device_ids == device_id
-        by_device[device_names.get(int(device_id), str(device_id))] = metrics(labels[selected], predicted[selected])
-    result["by_device"] = by_device
+def group_metrics(
+    labels: np.ndarray,
+    predicted: np.ndarray,
+    keys: np.ndarray,
+    names: dict[int, str] | None,
+    num_classes: int,
+) -> dict[str, dict[str, Any]]:
+    result: dict[str, dict[str, Any]] = {}
+    for key in np.unique(keys):
+        selected = keys == key
+        name = names.get(int(key), str(int(key))) if names is not None else str(key)
+        result[name] = multiclass_metrics(labels[selected], predicted[selected], num_classes)
     return result
 
 
-def evaluate(model: nn.Module, data: EventDataset, device: torch.device, batch_size: int, device_names: dict[int, str]) -> dict[str, Any]:
-    return evaluate_probability(data, probabilities(model, data, device, batch_size), 0.5, device_names)
+def recording_names(metadata: dict[str, Any]) -> dict[int, str]:
+    rows = metadata.get("recordings", [])
+    if not isinstance(rows, list):
+        return {}
+    result: dict[int, str] = {}
+    for recording_id, row in enumerate(rows):
+        if isinstance(row, dict):
+            result[recording_id] = "/".join(str(row.get(key, "")) for key in ("Environment", "Scenario", "Session"))
+    return result
+
+
+def scenario_ids(metadata: dict[str, Any], recording_ids: np.ndarray) -> tuple[np.ndarray, dict[int, str]]:
+    rows = metadata.get("recordings", [])
+    scenario_to_id: dict[str, int] = {}
+    names: dict[int, str] = {}
+    mapped = np.zeros(len(recording_ids), dtype=np.int64)
+    for index, recording_id in enumerate(recording_ids.astype(np.int64)):
+        scenario = "unknown"
+        if isinstance(rows, list) and 0 <= int(recording_id) < len(rows) and isinstance(rows[int(recording_id)], dict):
+            scenario = str(rows[int(recording_id)].get("Scenario", "unknown"))
+        if scenario not in scenario_to_id:
+            scenario_to_id[scenario] = len(scenario_to_id)
+            names[scenario_to_id[scenario]] = scenario
+        mapped[index] = scenario_to_id[scenario]
+    return mapped, names
+
+
+def evaluate_probability(
+    data: EventDataset,
+    probability: np.ndarray,
+    threshold: float | None,
+    device_names: dict[int, str],
+    num_classes: int,
+    metadata: dict[str, Any],
+) -> dict[str, Any]:
+    if len(probability) != len(data):
+        raise ValueError("Probability count differs from event windows")
+    if probability.ndim != 2 or probability.shape[1] != num_classes:
+        raise ValueError("Probability tensor shape differs from class count")
+    if num_classes == 2 and threshold is not None:
+        predicted = (probability[:, 1] >= threshold).astype(np.int64)
+    else:
+        predicted = probability.argmax(axis=1).astype(np.int64)
+    labels = data.y.numpy()
+    result: dict[str, Any] = {"alarm_threshold": threshold, "overall": multiclass_metrics(labels, predicted, num_classes)}
+    device_ids = data.device_id.numpy()
+    recording_ids = data.recording_id.numpy()
+    scenario_key, scenario_names = scenario_ids(metadata, recording_ids)
+    result["by_device"] = group_metrics(labels, predicted, device_ids, device_names, num_classes)
+    result["by_scenario"] = group_metrics(labels, predicted, scenario_key, scenario_names, num_classes)
+    result["by_recording"] = group_metrics(labels, predicted, recording_ids, recording_names(metadata), num_classes)
+    return result
+
+
+def evaluate(model: nn.Module, data: EventDataset, device: torch.device, batch_size: int, device_names: dict[int, str], num_classes: int, metadata: dict[str, Any]) -> dict[str, Any]:
+    threshold = 0.5 if num_classes == 2 else None
+    return evaluate_probability(data, probabilities(model, data, device, batch_size), threshold, device_names, num_classes, metadata)
 
 
 def load_checkpoint_model(checkpoint_path: Path, device: torch.device, input_dim: int) -> tuple[dict[str, Any], nn.Module]:
-    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    try:
+        checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    except TypeError:
+        checkpoint = torch.load(checkpoint_path, map_location=device)
     required = {"model", "input_dim", "hidden_dim", "dropout", "state_dict"}
     if missing := required.difference(checkpoint):
         raise ValueError(f"Invalid checkpoint; missing {sorted(missing)}")
     if input_dim != int(checkpoint["input_dim"]):
         raise ValueError("Checkpoint and tensor feature dimensions differ")
-    model = make_model(checkpoint["model"], int(checkpoint["input_dim"]), int(checkpoint["hidden_dim"]), float(checkpoint["dropout"])).to(device)
+    num_classes = int(checkpoint.get("num_classes", 2))
+    model = make_model(checkpoint["model"], int(checkpoint["input_dim"]), int(checkpoint["hidden_dim"]), float(checkpoint["dropout"]), num_classes).to(device)
     model.load_state_dict(checkpoint["state_dict"])
     return checkpoint, model
 
 
 def calibrate_checkpoint(args: argparse.Namespace, device_names: dict[int, str], device: torch.device, include_device_ids: set[int] | None) -> None:
-    val = EventDataset(args.data_dir / "val.npz", include_device_ids)
+    val = EventDataset(args.data_dir / "val.npz", args.label_key, include_device_ids, args.label_transform)
     checkpoint, model = load_checkpoint_model(args.checkpoint, device, val.x.shape[1])
+    if int(checkpoint.get("num_classes", 2)) != 2:
+        raise ValueError("--calibrate-only currently applies only to binary checkpoints")
     probability = probabilities(model, val, device, args.batch_size)
-    candidates = [evaluate_probability(val, probability, threshold, device_names) for threshold in args.thresholds]
+    metadata = json.loads((args.data_dir / "metadata.json").read_text(encoding="utf-8"))
+    candidates = [evaluate_probability(val, probability, threshold, device_names, 2, metadata) for threshold in args.thresholds]
     eligible = [candidate for candidate in candidates if candidate["overall"]["far"] <= args.max_val_far]
     if eligible:
         selected = max(eligible, key=lambda candidate: (candidate["overall"]["macro_f1"], candidate["overall"]["recall"], -candidate["overall"]["far"]))
@@ -182,11 +309,11 @@ def calibrate_checkpoint(args: argparse.Namespace, device_names: dict[int, str],
     print(json.dumps({"checkpoint": str(calibrated_path), "selected_threshold": selected["alarm_threshold"], "val_metrics": selected["overall"]}, indent=2))
 
 
-def class_weights(data: EventDataset) -> torch.Tensor:
-    counts = torch.bincount(data.y, minlength=2).float()
+def class_weights(data: EventDataset, num_classes: int) -> torch.Tensor:
+    counts = torch.bincount(data.y, minlength=num_classes).float()
     if torch.any(counts == 0):
         raise ValueError(f"Train split lacks an event class: {counts.tolist()}")
-    return counts.sum() / (2.0 * counts)
+    return counts.sum() / (float(num_classes) * counts)
 
 
 def save_json(path: Path, value: Any) -> None:
@@ -207,25 +334,27 @@ def main() -> None:
         include_device_ids = {named_device_ids[name] for name in args.include_devices}
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if args.test_only:
-        test = EventDataset(args.data_dir / "test.npz", include_device_ids)
+        test = EventDataset(args.data_dir / "test.npz", args.label_key, include_device_ids, args.label_transform)
         checkpoint, model = load_checkpoint_model(args.checkpoint, device, test.x.shape[1])
         args.output_dir.mkdir(parents=True, exist_ok=True)
-        threshold = float(checkpoint.get("alarm_threshold", 0.5))
-        save_json(args.output_dir / "test_metrics_device_event.json", evaluate_probability(test, probabilities(model, test, device, args.batch_size), threshold, device_names))
+        num_classes = int(checkpoint.get("num_classes", 2))
+        threshold = float(checkpoint.get("alarm_threshold", 0.5)) if num_classes == 2 else None
+        save_json(args.output_dir / "test_metrics_device_event.json", evaluate_probability(test, probabilities(model, test, device, args.batch_size), threshold, device_names, num_classes, metadata))
         return
     if args.calibrate_only:
         calibrate_checkpoint(args, device_names, device, include_device_ids)
         return
 
-    train = EventDataset(args.data_dir / "train.npz", include_device_ids)
-    val = EventDataset(args.data_dir / "val.npz", include_device_ids)
+    train = EventDataset(args.data_dir / "train.npz", args.label_key, include_device_ids, args.label_transform)
+    val = EventDataset(args.data_dir / "val.npz", args.label_key, include_device_ids, args.label_transform)
     if len(val) == 0:
         raise ValueError("Validation is empty; use a tensor directory with an inner validation split")
-    model = make_model(args.model, train.x.shape[1], args.hidden_dim, args.dropout).to(device)
+    num_classes = infer_num_classes(train, val, requested=args.num_classes)
+    model = make_model(args.model, train.x.shape[1], args.hidden_dim, args.dropout, num_classes).to(device)
     if args.dry_run:
-        print(json.dumps({"device": str(device), "model": args.model, "train_windows": len(train), "val_windows": len(val), "features": int(train.x.shape[1])}))
+        print(json.dumps({"device": str(device), "model": args.model, "label_key": args.label_key, "num_classes": num_classes, "train_windows": len(train), "val_windows": len(val), "features": int(train.x.shape[1])}))
         return
-    criterion = nn.CrossEntropyLoss(weight=class_weights(train).to(device))
+    criterion = nn.CrossEntropyLoss(weight=class_weights(train, num_classes).to(device))
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     loader = DataLoader(train, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers)
     best_score, best_state, stale = float("-inf"), None, 0
@@ -239,7 +368,7 @@ def main() -> None:
             loss.backward()
             optimizer.step()
             total_loss += float(loss.item()) * len(y)
-        val_metrics = evaluate(model, val, device, args.batch_size, device_names)["overall"]
+        val_metrics = evaluate(model, val, device, args.batch_size, device_names, num_classes, metadata)["overall"]
         row = {"epoch": epoch, "train_loss": total_loss / len(train), **val_metrics}
         history.append(row)
         score = float(val_metrics["macro_f1"])
@@ -258,11 +387,13 @@ def main() -> None:
     torch.save({
         "model": args.model, "input_dim": int(train.x.shape[1]), "hidden_dim": args.hidden_dim, "dropout": args.dropout,
         "best_val_macro_f1": best_score, "state_dict": best_state, "task": "device_attack_event",
-        "label_semantics": metadata["label_semantics"], "included_device_names": args.include_devices,
+        "label_key": args.label_key, "num_classes": num_classes,
+        "label_transform": args.label_transform,
+        "label_semantics": metadata.get("label_semantics"), "included_device_names": args.include_devices,
     }, checkpoint_path)
     save_json(args.output_dir / "training_history.json", history)
     model.load_state_dict(best_state)
-    save_json(args.output_dir / "val_metrics_device_event.json", evaluate(model, val, device, args.batch_size, device_names))
+    save_json(args.output_dir / "val_metrics_device_event.json", evaluate(model, val, device, args.batch_size, device_names, num_classes, metadata))
     print(json.dumps({"checkpoint": str(checkpoint_path), "best_val_macro_f1": best_score, "epochs": len(history)}, indent=2))
 
 
