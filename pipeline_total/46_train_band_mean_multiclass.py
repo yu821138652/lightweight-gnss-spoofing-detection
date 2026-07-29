@@ -293,7 +293,13 @@ def run_test_only(args: argparse.Namespace, device: torch.device) -> None:
     )
     if not checkpoint_path.is_file():
         raise FileNotFoundError(checkpoint_path)
-    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    # ``weights_only`` was added after the PyTorch version bundled with some
+    # project environments.  Keep the newer explicit form where available, but
+    # retain compatibility with the older unpickler API used for this project.
+    try:
+        checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    except TypeError:
+        checkpoint = torch.load(checkpoint_path, map_location=device)
     if not isinstance(checkpoint, dict) or "state_dict" not in checkpoint:
         raise ValueError(f"Checkpoint {checkpoint_path} has no state_dict")
     time_steps = int(checkpoint["time_steps"])
