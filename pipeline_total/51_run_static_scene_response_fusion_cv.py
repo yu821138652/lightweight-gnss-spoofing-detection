@@ -59,6 +59,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--response-epochs", type=int, default=60)
     parser.add_argument("--seed", type=int, default=2026)
     parser.add_argument("--skip-existing-band", action="store_true")
+    parser.add_argument(
+        "--resume-response", action="store_true",
+        help=(
+            "Reuse a completed response prediction; if both response checkpoints and tensors exist "
+            "but its prediction export is missing, run only the short override evaluation."
+        ),
+    )
     parser.add_argument("--overwrite-response-tensors", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
@@ -96,6 +103,33 @@ def main() -> None:
     run(band_command, args.dry_run)
 
     for fold in folds:
+        fold_device_dir = (
+            args.response_device_root / f"fold_{fold}" / "device_tensors_sparse_initial30_device"
+        )
+        fold_train_root = args.response_training_root / f"fold_{fold}"
+        flat_checkpoint = fold_train_root / "mlp_sparse_initial30_device_h32" / "best_device_event_mlp.pt"
+        direct_checkpoint = fold_train_root / "direct_expert_mlp_h32" / "best_device_event_mlp.pt"
+        override_dir = fold_train_root / "direct_override_mlp_h32_valcal_all"
+        prediction_path = override_dir / "test_response_state_predictions.csv"
+        if args.resume_response and prediction_path.is_file():
+            print(json.dumps({"reuse_response_prediction": str(prediction_path)}, ensure_ascii=False))
+            continue
+        if args.resume_response and (fold_device_dir / "test.npz").is_file() and flat_checkpoint.is_file() and direct_checkpoint.is_file():
+            run([
+                python, str(ROOT / "pipeline_total" / "42_eval_response_state_direct_override.py"),
+                "--data-dir", str(fold_device_dir),
+                "--output-dir", str(override_dir),
+                "--split", "test",
+                "--flat-checkpoint", str(flat_checkpoint),
+                "--direct-checkpoint", str(direct_checkpoint),
+                "--calibrate-threshold-on-val",
+                "--max-val-far", "0.05",
+                "--min-val-abnormal-recall", "0.90",
+                "--override-scope", "all",
+                "--fold", str(fold),
+                "--predictions-csv", str(prediction_path),
+            ], args.dry_run)
+            continue
         response_command = [
             python, str(ROOT / "pipeline_total" / "43_run_static_response_state_fold.py"),
             "--fold", f"fold_{fold}",
