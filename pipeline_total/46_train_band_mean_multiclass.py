@@ -293,7 +293,13 @@ def run_test_only(args: argparse.Namespace, device: torch.device) -> None:
     )
     if not checkpoint_path.is_file():
         raise FileNotFoundError(checkpoint_path)
-    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    # ``weights_only`` was added after the PyTorch version bundled with some
+    # project environments.  Keep the newer explicit form where available, but
+    # retain compatibility with the older unpickler API used for this project.
+    try:
+        checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    except TypeError:
+        checkpoint = torch.load(checkpoint_path, map_location=device)
     if not isinstance(checkpoint, dict) or "state_dict" not in checkpoint:
         raise ValueError(f"Checkpoint {checkpoint_path} has no state_dict")
     time_steps = int(checkpoint["time_steps"])
@@ -322,25 +328,39 @@ def run_test_only(args: argparse.Namespace, device: torch.device) -> None:
     if len(test["y"]) == 0:
         raise ValueError("Test split has no usable windows")
     x = torch.from_numpy(test["x"]).to(device)
-    preds = model(x).argmax(-1).cpu().numpy()
+    logits = model(x)
+    probabilities = torch.softmax(logits, dim=1).cpu().numpy()
+    preds = logits.argmax(-1).cpu().numpy()
     y_true = test["y"]
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     predictions_path = args.output_dir / f"test_predictions_band_mean_window_{args.encoder}.csv"
     rows = len(y_true)
-    fields = ["fold", "recording_id", "device_id", "endpoint_tow", "true_class", "pred_class"]
+    mapping_path = args.data_dir / "device_mapping.json"
+    device_names: dict[int, str] = {}
+    if mapping_path.is_file():
+        mapping = json.loads(mapping_path.read_text(encoding="utf-8"))
+        device_names = {int(value): str(name) for name, value in mapping.items()}
+    fields = [
+        "fold", "recording_id", "device_id", "device_name", "endpoint_tow",
+        "true_class", "pred_class", *[f"prob_{CLASS_NAMES[c]}" for c in range(NUM_CLASSES)],
+    ]
     with predictions_path.open("w", newline="", encoding="utf-8-sig") as handle:
         writer = csv.DictWriter(handle, fieldnames=fields)
         writer.writeheader()
         for i in range(rows):
-            writer.writerow({
+            device_id = int(test["device_id"][i]) if "device_id" in test else -1
+            row = {
                 "fold": args.fold if args.fold is not None else "",
                 "recording_id": int(test["recording_id"][i]) if "recording_id" in test else "",
-                "device_id": int(test["device_id"][i]) if "device_id" in test else "",
+                "device_id": device_id if device_id >= 0 else "",
+                "device_name": device_names.get(device_id, ""),
                 "endpoint_tow": float(test["endpoint_tow"][i]) if "endpoint_tow" in test else "",
                 "true_class": int(y_true[i]),
                 "pred_class": int(preds[i]),
-            })
+            }
+            row.update({f"prob_{CLASS_NAMES[c]}": float(probabilities[i, c]) for c in range(NUM_CLASSES)})
+            writer.writerow(row)
     present = sorted(set(y_true.tolist()))
     LOG.info(
         "test-only fold=%s usable=%d classes_present=%s exported=%s",
