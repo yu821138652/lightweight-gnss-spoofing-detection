@@ -67,14 +67,19 @@ FEATURES = [
     "ReceivedSvTimeUncertaintyNanos",
     "PseudorangeRateUncertaintyMetersPerSecond",
 ]
-# 8 continuous band means are standardized; the 2 presence flags stay in [0, 1].
+# The continuous band means plus the L1-minus-L5 C/N0 contrast are standardized;
+# the 2 presence flags stay in [0, 1].  The contrast makes "L1 rose relative to
+# L5" explicit rather than leaving the model to infer it from two levels that a
+# per-device scaler shifts independently.
+CN0_DIFF_NAME = "Cn0DbHzL1MinusL5"
 FEATURE_NAMES = (
     [f"L1_{name}" for name in FEATURES]
     + [f"L5_{name}" for name in FEATURES]
+    + [CN0_DIFF_NAME]
     + ["L1Present", "L5Present"]
 )
-CONTINUOUS_COUNT = len(FEATURES) * len(BANDS)  # 8
-FEATURE_COUNT = len(FEATURE_NAMES)  # 10
+CONTINUOUS_COUNT = len(FEATURES) * len(BANDS) + 1  # 8 band means + 1 C/N0 contrast
+FEATURE_COUNT = len(FEATURE_NAMES)  # 11
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - [%(levelname)s] - %(message)s")
 LOG = logging.getLogger(__name__)
@@ -191,6 +196,11 @@ def band_epoch_table(source: pd.DataFrame) -> pd.DataFrame:
             columns[f"{'L1' if band_value == 1 else 'L5'}_{feature}"] = mean
         present[band_value] = grouped.size() if len(sub) else pd.Series(dtype=float)
     table = pd.DataFrame(columns)
+    # L1-minus-L5 C/N0 contrast: only defined where both bands are observed;
+    # NaN elsewhere so it becomes the neutral post-scaling 0 like any missing
+    # band mean.  This is the epoch-level analogue of the gap between the blue
+    # and red C/N0 curves in the dashboards.
+    table[CN0_DIFF_NAME] = table["L1_Cn0DbHz"] - table["L5_Cn0DbHz"]
     # Presence: a band is observed at an epoch iff it contributed >=1 signal row.
     table["L1Present"] = present[1].reindex(table.index).fillna(0).gt(0).astype(np.float32)
     table["L5Present"] = present[5].reindex(table.index).fillna(0).gt(0).astype(np.float32)
@@ -367,6 +377,7 @@ def build(
     outer_manifest_path: Path,
     config_path: Path,
     output_dir: Path,
+    scope: str = "static",
 ) -> dict:
     output_dir.mkdir(parents=True, exist_ok=True)
     intervals, scenario_to_class = load_scene_labels(config_path)
@@ -390,11 +401,20 @@ def build(
         raise ValueError(f"Processed CSV missing columns: {sorted(missing)}")
     df = _norm_keys(df)
     scenario = df["Scenario"].astype(str)
-    df = df[(df["LabelStatus"].astype(str) == "reviewed") & scenario.str.startswith("st_")].copy()
+    reviewed = df["LabelStatus"].astype(str) == "reviewed"
+    if scope == "static":
+        in_scope = scenario.str.startswith("st_")
+    elif scope == "dynamic":
+        in_scope = scenario.str.startswith("dy_")
+    elif scope == "all":
+        in_scope = scenario.str.startswith("st_") | scenario.str.startswith("dy_")
+    else:
+        raise ValueError(f"Unsupported scope: {scope!r}")
+    df = df[reviewed & in_scope].copy()
     df["_identity"] = list(zip(df["Environment"], df["Scenario"], df["Session"]))
     df = df[df["_identity"].isin(kept_recordings)].copy()
     if df.empty:
-        raise ValueError("No reviewed static rows match the outer manifest")
+        raise ValueError(f"No reviewed rows in scope={scope!r} match the outer manifest")
     for column in [*FEATURES, "TimeNanos", "TOW", "utcTimeMillis", "FreqBand"]:
         df[column] = pd.to_numeric(df[column], errors="coerce")
     df = df.dropna(subset=[*KEYS, "DeviceName", "TimeNanos", "utcTimeMillis", "FreqBand"])
@@ -515,9 +535,14 @@ def main() -> None:
     )
     parser.add_argument("--config", type=Path, default=ROOT / "configs" / "preprocessing.yml")
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument(
+        "--scope", choices=("static", "dynamic", "all"), default="static",
+        help="Which recordings to include by Scenario prefix: st_ / dy_ / both.",
+    )
     args = parser.parse_args()
     summary = build(
-        args.csv, args.epoch_manifest, args.outer_manifest, args.config, args.output_dir
+        args.csv, args.epoch_manifest, args.outer_manifest, args.config,
+        args.output_dir, args.scope,
     )
     print(json.dumps(summary["split_stats"], indent=2))
 

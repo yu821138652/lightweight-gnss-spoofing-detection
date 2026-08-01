@@ -70,6 +70,7 @@ def build_and_train_fold(
     skip_existing: bool,
     class_weight_mult: list[float] | None = None,
     drop_features: list[str] | None = None,
+    scope: str = "static",
 ) -> Path:
     fold_protocol = protocol_dir / f"fold_{fold}"
     epoch_manifest = fold_protocol / "epoch_split_manifest.csv"
@@ -93,6 +94,7 @@ def build_and_train_fold(
             "--outer-manifest", str(outer_manifest),
             "--config", str(config_path),
             "--output-dir", str(tensor_dir),
+            "--scope", scope,
         ])
 
     checkpoint = output_dir / f"best_band_mean_window_{encoder}.pt"
@@ -206,6 +208,10 @@ def parse_args() -> argparse.Namespace:
         "--drop-features", type=str, nargs="+", default=None,
         help="Feature ablation names passed through to the trainer (e.g. AgcDb).",
     )
+    parser.add_argument(
+        "--scope", choices=("static", "dynamic", "all"), default="static",
+        help="Recording scope passed to the tensor builder: static (st_*), dynamic (dy_*), or all.",
+    )
     return parser.parse_args()
 
 
@@ -227,6 +233,7 @@ def main() -> None:
                 fold, args.protocol_dir, args.tensors_root, args.training_root,
                 args.csv, args.config, args.encoder, args.epochs, args.seed,
                 args.skip_existing, args.class_weight_mult, args.drop_features,
+                args.scope,
             )
         )
 
