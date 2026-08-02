@@ -4,13 +4,15 @@
 
 ## 当前状态
 
-截至 2026-07-27：
+截至 2026-08-02：
 
 - 正式数据口径为 123 份原始日志：操场 89 份、新主楼 34 份；大文件、中央 CSV、张量、checkpoint 和图像均保留在本地 `output/`，不提交 Git。
 - 当前主研究对象是静态逐 `signal_id` 的 target-band-only 欺骗检测。动态数据、历史设备级 P0-P5 和静态/动态混合任务均保留为独立历史路线，不能与当前主任务混合比较。
 - 完整 7-fold `compact11 + TCN16` 是当前保留对照基线；其结果与近期 Fold 6 诊断实验使用的特征集、refit 协议和评价口径不同，不能只按单个 pooled 分数排序。
 - Fold 6 的 outer test 已被多次读取以诊断错误结构。E9-E11 因而只能作为迭代式开发诊断，而非新的独立盲测结果。
 - 截至目前没有确定最终部署模型。当前最明确的问题是静态操场长 L5 Session 中存在严重的设备条件失配：不同设备会出现相反的漏检和误报模式。
+- 方案优化阶段 3 已完成：场景分支经过 S1–S5 六折特征消融后，确定四维 C/N0-only + TCN 为当前正式候选，pooled Macro-F1=0.9921、Accuracy=0.9944。
+- 方案优化阶段 4 已启动：固定 S1 四维输入，比较 TCN、GRU、LSTM 和轻量 1D CNN；阶段 5 后融合优化与阶段 6 实时性/轻量化实验尚未完成。
 
 请依次阅读：[当前交接状态](docs/handoff_status.md)、[Fold 6 诊断快照](docs/static_signal_fold6_diagnostics_20260727.md)、[数据清单](docs/data_inventory.md) 和 [脚本索引](pipeline_total/README.md)。
 

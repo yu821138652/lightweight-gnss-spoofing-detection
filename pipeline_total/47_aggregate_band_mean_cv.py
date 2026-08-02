@@ -65,12 +65,18 @@ def build_and_train_fold(
     csv_path: Path,
     config_path: Path,
     encoder: str,
+    hidden_dim: int,
+    dropout: float,
     epochs: int,
     seed: int,
     skip_existing: bool,
     class_weight_mult: list[float] | None = None,
     drop_features: list[str] | None = None,
     scope: str = "static",
+    include_pseudorange_rate: bool = False,
+    include_state_adr: bool = False,
+    include_pseudorange_residual: bool = False,
+    include_cross_band: bool = False,
 ) -> Path:
     fold_protocol = protocol_dir / f"fold_{fold}"
     epoch_manifest = fold_protocol / "epoch_split_manifest.csv"
@@ -87,7 +93,7 @@ def build_and_train_fold(
         return predictions_path
 
     if not (skip_existing and (tensor_dir / "train.npz").is_file()):
-        run([
+        build_cmd = [
             sys.executable, str(PIPELINE / "45_build_band_mean_window_tensors.py"),
             "--csv", str(csv_path),
             "--epoch-manifest", str(epoch_manifest),
@@ -95,7 +101,16 @@ def build_and_train_fold(
             "--config", str(config_path),
             "--output-dir", str(tensor_dir),
             "--scope", scope,
-        ])
+        ]
+        if include_pseudorange_rate:
+            build_cmd.append("--include-pseudorange-rate")
+        if include_state_adr:
+            build_cmd.append("--include-state-adr")
+        if include_pseudorange_residual:
+            build_cmd.append("--include-pseudorange-residual")
+        if include_cross_band:
+            build_cmd.append("--include-cross-band")
+        run(build_cmd)
 
     checkpoint = output_dir / f"best_band_mean_window_{encoder}.pt"
     if not (skip_existing and checkpoint.is_file()):
@@ -104,6 +119,8 @@ def build_and_train_fold(
             "--data-dir", str(tensor_dir),
             "--output-dir", str(output_dir),
             "--encoder", encoder,
+            "--hidden-dim", str(hidden_dim),
+            "--dropout", str(dropout),
             "--epochs", str(epochs),
             "--seed", str(seed),
         ]
@@ -189,6 +206,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--csv", type=Path, default=ROOT / "output" / "processed_gnss_data.csv")
     parser.add_argument("--config", type=Path, default=ROOT / "configs" / "preprocessing.yml")
     parser.add_argument("--encoder", choices=("lstm", "gru", "tcn"), default="tcn")
+    parser.add_argument("--hidden-dim", type=int, default=32,
+                        help="Hidden/channel dimension passed to the trainer.")
+    parser.add_argument("--dropout", type=float, default=0.1,
+                        help="Dropout passed to the trainer (must be in [0, 1)).")
     parser.add_argument("--epochs", type=int, default=40)
     parser.add_argument("--seed", type=int, default=2026)
     parser.add_argument("--folds", type=int, nargs="*", default=None, help="Subset of fold ids; default all.")
@@ -212,13 +233,35 @@ def parse_args() -> argparse.Namespace:
         "--scope", choices=("static", "dynamic", "all"), default="static",
         help="Recording scope passed to the tensor builder: static (st_*), dynamic (dy_*), or all.",
     )
-    return parser.parse_args()
+    parser.add_argument(
+        "--include-pseudorange-rate", action="store_true",
+        help="Pass --include-pseudorange-rate to the band-mean tensor builder.",
+    )
+    parser.add_argument(
+        "--include-state-adr", action="store_true",
+        help="Pass --include-state-adr to the band-mean tensor builder.",
+    )
+    parser.add_argument(
+        "--include-pseudorange-residual", action="store_true",
+        help="Pass --include-pseudorange-residual to the band-mean tensor builder.",
+    )
+    parser.add_argument(
+        "--include-cross-band", action="store_true",
+        help="Pass --include-cross-band to the band-mean tensor builder.",
+    )
+    args = parser.parse_args()
+    if args.hidden_dim <= 0:
+        parser.error("--hidden-dim must be positive")
+    if not 0.0 <= args.dropout < 1.0:
+        parser.error("--dropout must be in [0, 1)")
+    return args
 
 
 def main() -> None:
     args = parse_args()
     folds = args.folds or fold_ids(args.protocol_dir)
-    LOG.info("folds=%s encoder=%s", folds, args.encoder)
+    LOG.info("folds=%s encoder=%s hidden_dim=%d dropout=%.3f",
+             folds, args.encoder, args.hidden_dim, args.dropout)
 
     prediction_paths: list[Path] = []
     for fold in folds:
@@ -231,9 +274,12 @@ def main() -> None:
         prediction_paths.append(
             build_and_train_fold(
                 fold, args.protocol_dir, args.tensors_root, args.training_root,
-                args.csv, args.config, args.encoder, args.epochs, args.seed,
+                args.csv, args.config, args.encoder, args.hidden_dim, args.dropout,
+                args.epochs, args.seed,
                 args.skip_existing, args.class_weight_mult, args.drop_features,
-                args.scope,
+                args.scope, args.include_pseudorange_rate, args.include_state_adr,
+                args.include_pseudorange_residual,
+                args.include_cross_band,
             )
         )
 

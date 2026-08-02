@@ -67,6 +67,11 @@ FEATURES = [
     "ReceivedSvTimeUncertaintyNanos",
     "PseudorangeRateUncertaintyMetersPerSecond",
 ]
+RATE_RAW_FEATURE = "PseudorangeRateMetersPerSecond"
+STATE_RAW_FEATURE = "State"
+ADR_STATE_RAW_FEATURE = "AccumulatedDeltaRangeState"
+ADR_RAW_FEATURE = "AccumulatedDeltaRangeMeters"
+PSEUDORANGE_RAW_FEATURE = "Pseudorange_Calculated"
 # The continuous band means plus the L1-minus-L5 C/N0 contrast are standardized;
 # the 2 presence flags stay in [0, 1].  The contrast makes "L1 rose relative to
 # L5" explicit rather than leaving the model to infer it from two levels that a
@@ -80,6 +85,61 @@ FEATURE_NAMES = (
 )
 CONTINUOUS_COUNT = len(FEATURES) * len(BANDS) + 1  # 8 band means + 1 C/N0 contrast
 FEATURE_COUNT = len(FEATURE_NAMES)  # 11
+INCLUDE_PSEUDORANGE_RATE = False
+INCLUDE_STATE_ADR = False
+INCLUDE_PSEUDORANGE_RESIDUAL = False
+INCLUDE_CROSS_BAND = False
+
+
+def feature_names_for_mode(
+    include_pseudorange_rate: bool,
+    include_state_adr: bool,
+    include_pseudorange_residual: bool,
+    include_cross_band: bool,
+) -> list[str]:
+    names = [f"L1_{name}" for name in FEATURES] + [f"L5_{name}" for name in FEATURES]
+    if include_pseudorange_rate:
+        for band_name in ("L1", "L5"):
+            names.extend(
+                [
+                    f"{band_name}_PrrMean",
+                    f"{band_name}_PrrSlope",
+                    f"{band_name}_PrrMad",
+                    f"{band_name}_PrrOutlierRatio",
+                ]
+            )
+    if include_state_adr:
+        for band_name in ("L1", "L5"):
+            names.extend(
+                [
+                    f"{band_name}_StateCodeLockRatio",
+                    f"{band_name}_StateTowDecodedRatio",
+                    f"{band_name}_StateSwitchRatio",
+                    f"{band_name}_AdrResetSlipRatio",
+                    f"{band_name}_AdrStateSwitchRatio",
+                    f"{band_name}_AdrAbsDiffMedian",
+                    f"{band_name}_StateAdrMissingRatio",
+                ]
+            )
+    if include_pseudorange_residual:
+        for band_name in ("L1", "L5"):
+            names.extend(
+                [
+                    f"{band_name}_PrResidualMad",
+                    f"{band_name}_PrResidualP95",
+                    f"{band_name}_PrResidualOutlierRatio",
+                ]
+            )
+    if include_cross_band:
+        names.extend(
+            [
+                "Cn0SlopeL1MinusL5",
+                "L5UpL1DownRatio",
+                "L1UpL5DownRatio",
+            ]
+        )
+    names.extend([CN0_DIFF_NAME, "L1Present", "L5Present"])
+    return names
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - [%(levelname)s] - %(message)s")
 LOG = logging.getLogger(__name__)
@@ -185,6 +245,39 @@ def band_epoch_table(source: pd.DataFrame) -> pd.DataFrame:
     UTC/TOW representatives.  This is the epoch-level analogue of the per-TOW
     band mean drawn by the dashboard.
     """
+    source = source.copy()
+    if INCLUDE_PSEUDORANGE_RESIDUAL:
+        required = {PSEUDORANGE_RAW_FEATURE, "ConstellationType"}
+        missing = sorted(required.difference(source.columns))
+        if missing:
+            raise ValueError(
+                f"Pseudorange residual feature set requires columns {missing}; "
+                "rebuild the processed CSV with --include-dynamic-raw-features"
+            )
+        pseudorange = pd.to_numeric(source[PSEUDORANGE_RAW_FEATURE], errors="coerce")
+        constellation = pd.to_numeric(source["ConstellationType"], errors="coerce")
+        group_median = pseudorange.groupby(
+            [source["TimeNanos"], constellation], sort=False
+        ).transform("median")
+        source["_PrResidualAbs"] = (pseudorange - group_median).abs()
+    if INCLUDE_STATE_ADR:
+        required = {
+            "signal_id", STATE_RAW_FEATURE, ADR_STATE_RAW_FEATURE, ADR_RAW_FEATURE,
+        }
+        missing = sorted(required.difference(source.columns))
+        if missing:
+            raise ValueError(
+                f"State/ADR feature set requires columns {missing}; "
+                "rebuild the processed CSV with --include-dynamic-raw-features"
+            )
+        source = source.sort_values(["signal_id", "TimeNanos"], kind="mergesort")
+        state_group = source.groupby("signal_id", sort=False)[STATE_RAW_FEATURE]
+        adr_state_group = source.groupby("signal_id", sort=False)[ADR_STATE_RAW_FEATURE]
+        adr_group = source.groupby("signal_id", sort=False)[ADR_RAW_FEATURE]
+        source["_StateChanged"] = state_group.diff().abs().gt(0).astype(np.float32)
+        source["_AdrStateChanged"] = adr_state_group.diff().abs().gt(0).astype(np.float32)
+        source["_AdrAbsDiff"] = adr_group.diff().abs()
+
     band = pd.to_numeric(source["FreqBand"], errors="coerce")
     columns: dict[str, pd.Series] = {}
     present: dict[int, pd.Series] = {}
@@ -194,7 +287,105 @@ def band_epoch_table(source: pd.DataFrame) -> pd.DataFrame:
         for feature in FEATURES:
             mean = grouped[feature].mean() if len(sub) else pd.Series(dtype=float)
             columns[f"{'L1' if band_value == 1 else 'L5'}_{feature}"] = mean
-        present[band_value] = grouped.size() if len(sub) else pd.Series(dtype=float)
+        if INCLUDE_PSEUDORANGE_RATE:
+            if RATE_RAW_FEATURE not in sub.columns:
+                raise ValueError(
+                    f"{RATE_RAW_FEATURE} is required for the pseudorange-rate feature set "
+                    "but is absent from the processed CSV"
+                )
+            band_name = "L1" if band_value == 1 else "L5"
+            rate_grouped = grouped[RATE_RAW_FEATURE]
+            rate_mean = rate_grouped.mean()
+            rate_median = rate_grouped.median()
+
+            def mad(values: pd.Series) -> float:
+                median = float(values.median())
+                return float((values - median).abs().median())
+
+            rate_mad = rate_grouped.apply(mad)
+
+            def outlier_ratio(values: pd.Series) -> float:
+                median = float(values.median())
+                spread = float((values - median).abs().median())
+                if not np.isfinite(spread) or spread < 1e-6:
+                    return 0.0
+                return float(((values - median).abs() > 3.0 * spread).mean())
+
+            rate_outlier = rate_grouped.apply(outlier_ratio)
+            columns[f"{band_name}_PrrMean"] = rate_mean
+            columns[f"{band_name}_PrrSlope"] = rate_mean.diff().fillna(0.0)
+            columns[f"{band_name}_PrrMad"] = rate_mad
+            columns[f"{band_name}_PrrOutlierRatio"] = rate_outlier
+        if INCLUDE_STATE_ADR:
+            band_name = "L1" if band_value == 1 else "L5"
+            if len(sub):
+                state_grouped = sub.groupby("TimeNanos", sort=True)
+                state = pd.to_numeric(sub[STATE_RAW_FEATURE], errors="coerce")
+                adr_state = pd.to_numeric(sub[ADR_STATE_RAW_FEATURE], errors="coerce")
+                adr_missing = state.isna() | adr_state.isna() | sub[ADR_RAW_FEATURE].isna()
+                state_values = state_grouped[STATE_RAW_FEATURE]
+                adr_state_values = state_grouped[ADR_STATE_RAW_FEATURE]
+                columns[f"{band_name}_StateCodeLockRatio"] = state_values.apply(
+                    lambda values: float(((pd.to_numeric(values, errors="coerce").fillna(0).astype(np.int64) & 1) != 0).mean())
+                )
+                columns[f"{band_name}_StateTowDecodedRatio"] = state_values.apply(
+                    lambda values: float(((pd.to_numeric(values, errors="coerce").fillna(0).astype(np.int64) & 8) != 0).mean())
+                )
+                columns[f"{band_name}_StateSwitchRatio"] = state_grouped["_StateChanged"].mean()
+                columns[f"{band_name}_AdrResetSlipRatio"] = adr_state_values.apply(
+                    lambda values: float(((pd.to_numeric(values, errors="coerce").fillna(0).astype(np.int64) & 6) != 0).mean())
+                )
+                columns[f"{band_name}_AdrStateSwitchRatio"] = state_grouped["_AdrStateChanged"].mean()
+                columns[f"{band_name}_AdrAbsDiffMedian"] = state_grouped["_AdrAbsDiff"].median()
+                columns[f"{band_name}_StateAdrMissingRatio"] = state_grouped.apply(
+                    lambda frame: float(adr_missing.loc[frame.index].mean())
+                )
+            else:
+                for suffix in (
+                    "StateCodeLockRatio", "StateTowDecodedRatio", "StateSwitchRatio",
+                    "AdrResetSlipRatio", "AdrStateSwitchRatio", "AdrAbsDiffMedian",
+                    "StateAdrMissingRatio",
+                ):
+                    columns[f"{band_name}_{suffix}"] = pd.Series(dtype=float)
+        if INCLUDE_PSEUDORANGE_RESIDUAL:
+            band_name = "L1" if band_value == 1 else "L5"
+            if len(sub):
+                residual_grouped = sub.groupby("TimeNanos", sort=True)["_PrResidualAbs"]
+
+                def residual_mad(values: pd.Series) -> float:
+                    median = float(values.median())
+                    return float((values - median).abs().median())
+
+                def residual_outlier_ratio(values: pd.Series) -> float:
+                    median = float(values.median())
+                    spread = float((values - median).abs().median())
+                    if not np.isfinite(spread) or spread < 1e-6:
+                        return 0.0
+                    return float(((values - median).abs() > 3.0 * spread).mean())
+
+                columns[f"{band_name}_PrResidualMad"] = residual_grouped.apply(residual_mad)
+                columns[f"{band_name}_PrResidualP95"] = residual_grouped.quantile(0.95)
+                columns[f"{band_name}_PrResidualOutlierRatio"] = residual_grouped.apply(
+                    residual_outlier_ratio
+                )
+            else:
+                for suffix in ("PrResidualMad", "PrResidualP95", "PrResidualOutlierRatio"):
+                    columns[f"{band_name}_{suffix}"] = pd.Series(dtype=float)
+    if INCLUDE_CROSS_BAND:
+        l1_mean = columns.get("L1_Cn0DbHz", pd.Series(dtype=float))
+        l5_mean = columns.get("L5_Cn0DbHz", pd.Series(dtype=float))
+        l1_slope = l1_mean.diff().fillna(0.0)
+        l5_slope = l5_mean.diff().fillna(0.0)
+        columns["Cn0SlopeL1MinusL5"] = l1_slope - l5_slope
+        columns["L5UpL1DownRatio"] = ((l5_slope > 0.0) & (l1_slope < 0.0)).astype(np.float32)
+        columns["L1UpL5DownRatio"] = ((l1_slope > 0.0) & (l5_slope < 0.0)).astype(np.float32)
+
+
+    # Presence is recorded for every band, including when the optional
+    # cross-band feature block is disabled.
+    for band_value in BANDS:
+        sub = source[band.eq(band_value)]
+        present[band_value] = sub.groupby("TimeNanos", sort=True).size() if len(sub) else pd.Series(dtype=float)
     table = pd.DataFrame(columns)
     # L1-minus-L5 C/N0 contrast: only defined where both bands are observed;
     # NaN elsewhere so it becomes the neutral post-scaling 0 like any missing
@@ -378,7 +569,26 @@ def build(
     config_path: Path,
     output_dir: Path,
     scope: str = "static",
+    include_pseudorange_rate: bool = False,
+    include_state_adr: bool = False,
+    include_pseudorange_residual: bool = False,
+    include_cross_band: bool = False,
 ) -> dict:
+    global FEATURE_NAMES, CONTINUOUS_COUNT, FEATURE_COUNT
+    global INCLUDE_PSEUDORANGE_RATE, INCLUDE_STATE_ADR
+    global INCLUDE_PSEUDORANGE_RESIDUAL, INCLUDE_CROSS_BAND
+    INCLUDE_PSEUDORANGE_RATE = bool(include_pseudorange_rate)
+    INCLUDE_STATE_ADR = bool(include_state_adr)
+    INCLUDE_PSEUDORANGE_RESIDUAL = bool(include_pseudorange_residual)
+    INCLUDE_CROSS_BAND = bool(include_cross_band)
+    # Keep this as a list: pandas accepts a list of columns, while a tuple is
+    # interpreted as one composite column key by ``table[FEATURE_NAMES]``.
+    FEATURE_NAMES = feature_names_for_mode(
+        INCLUDE_PSEUDORANGE_RATE, INCLUDE_STATE_ADR, INCLUDE_PSEUDORANGE_RESIDUAL,
+        INCLUDE_CROSS_BAND,
+    )
+    CONTINUOUS_COUNT = len(FEATURE_NAMES) - 2
+    FEATURE_COUNT = len(FEATURE_NAMES)
     output_dir.mkdir(parents=True, exist_ok=True)
     intervals, scenario_to_class = load_scene_labels(config_path)
     epoch_lookup = load_epoch_manifest(manifest_path)
@@ -394,6 +604,14 @@ def build(
         *KEYS, "DeviceName", SOURCE_COL, "TimeNanos", "TOW", "utcTimeMillis",
         "FreqBand", "Label", "LabelStatus", *FEATURES,
     ]
+    if INCLUDE_PSEUDORANGE_RATE:
+        usecols.append(RATE_RAW_FEATURE)
+    if INCLUDE_STATE_ADR:
+        usecols.extend([
+            "signal_id", STATE_RAW_FEATURE, ADR_STATE_RAW_FEATURE, ADR_RAW_FEATURE,
+        ])
+    if INCLUDE_PSEUDORANGE_RESIDUAL:
+        usecols.extend(["ConstellationType", PSEUDORANGE_RAW_FEATURE])
     LOG.info("Reading %s", csv_path)
     df = pd.read_csv(csv_path, usecols=lambda c: c in set(usecols))
     missing = set(usecols).difference(df.columns)
@@ -415,7 +633,14 @@ def build(
     df = df[df["_identity"].isin(kept_recordings)].copy()
     if df.empty:
         raise ValueError(f"No reviewed rows in scope={scope!r} match the outer manifest")
-    for column in [*FEATURES, "TimeNanos", "TOW", "utcTimeMillis", "FreqBand"]:
+    numeric_columns = [*FEATURES, "TimeNanos", "TOW", "utcTimeMillis", "FreqBand"]
+    if INCLUDE_PSEUDORANGE_RATE:
+        numeric_columns.append(RATE_RAW_FEATURE)
+    if INCLUDE_STATE_ADR:
+        numeric_columns.extend([STATE_RAW_FEATURE, ADR_STATE_RAW_FEATURE, ADR_RAW_FEATURE])
+    if INCLUDE_PSEUDORANGE_RESIDUAL:
+        numeric_columns.extend(["ConstellationType", PSEUDORANGE_RAW_FEATURE])
+    for column in numeric_columns:
         df[column] = pd.to_numeric(df[column], errors="coerce")
     df = df.dropna(subset=[*KEYS, "DeviceName", "TimeNanos", "utcTimeMillis", "FreqBand"])
     df["DeviceName"] = df["DeviceName"].astype(str)
@@ -494,6 +719,25 @@ def build(
         "time_steps": TIME_STEPS,
         "feature_count": FEATURE_COUNT,
         "continuous_count": CONTINUOUS_COUNT,
+        "feature_set": (
+            "cn0_plus_pseudorange_rate_state_adr_residual_and_cross_band"
+            if INCLUDE_PSEUDORANGE_RATE and INCLUDE_STATE_ADR and INCLUDE_PSEUDORANGE_RESIDUAL and INCLUDE_CROSS_BAND
+            else "cn0_plus_cross_band"
+            if INCLUDE_CROSS_BAND and not (INCLUDE_PSEUDORANGE_RATE or INCLUDE_STATE_ADR or INCLUDE_PSEUDORANGE_RESIDUAL)
+            else "cn0_plus_pseudorange_rate_state_adr_and_residual"
+            if INCLUDE_PSEUDORANGE_RATE and INCLUDE_STATE_ADR and INCLUDE_PSEUDORANGE_RESIDUAL
+            else "cn0_plus_pseudorange_rate_and_state_adr"
+            if INCLUDE_PSEUDORANGE_RATE and INCLUDE_STATE_ADR
+            else "cn0_plus_pseudorange_rate"
+            if INCLUDE_PSEUDORANGE_RATE
+            else "cn0_plus_state_adr_and_residual"
+            if INCLUDE_STATE_ADR and INCLUDE_PSEUDORANGE_RESIDUAL
+            else "cn0_plus_state_adr"
+            if INCLUDE_STATE_ADR
+            else "cn0_plus_pseudorange_residual"
+            if INCLUDE_PSEUDORANGE_RESIDUAL
+            else "baseline"
+        ),
         "feature_names": FEATURE_NAMES,
         "features": FEATURES,
         "bands": list(BANDS),
@@ -539,10 +783,38 @@ def main() -> None:
         "--scope", choices=("static", "dynamic", "all"), default="static",
         help="Which recordings to include by Scenario prefix: st_ / dy_ / both.",
     )
+    parser.add_argument(
+        "--include-pseudorange-rate", action="store_true",
+        help=(
+            "Append per-band pseudorange-rate mean, causal slope, robust MAD and "
+            "within-epoch outlier ratio features."
+        ),
+    )
+    parser.add_argument(
+        "--include-state-adr", action="store_true",
+        help=(
+            "Append State/ADR continuity features: tracking-state bit ratios, "
+            "state transitions, ADR reset/slip ratio, ADR-state transitions, "
+            "ADR difference magnitude and missingness."
+        ),
+    )
+    parser.add_argument(
+        "--include-pseudorange-residual", action="store_true",
+        help=(
+            "Append causal same-epoch, same-constellation robust pseudorange "
+            "residual MAD, P95 and outlier-ratio features."
+        ),
+    )
+    parser.add_argument(
+        "--include-cross-band", action="store_true",
+        help="Append causal L1/L5 C/N0 slope-difference and opposite-trend features.",
+    )
     args = parser.parse_args()
     summary = build(
         args.csv, args.epoch_manifest, args.outer_manifest, args.config,
-        args.output_dir, args.scope,
+        args.output_dir, args.scope, args.include_pseudorange_rate, args.include_state_adr,
+        args.include_pseudorange_residual,
+        args.include_cross_band,
     )
     print(json.dumps(summary["split_stats"], indent=2))
 

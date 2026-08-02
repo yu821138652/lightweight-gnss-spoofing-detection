@@ -60,6 +60,18 @@ FEATURE_COLS = [
     'AccumulatedDeltaRangeUncertaintyMeters',
 ]
 
+# These raw physical fields are intentionally opt-in.  The historical
+# processed CSV is kept compact for the existing signal-level experiments,
+# while the scene-feature ablations can request the additional fields without
+# changing the default output contract.
+DYNAMIC_RAW_FEATURE_COLS = [
+    'Pseudorange_Calculated',
+    'PseudorangeRateMetersPerSecond',
+    'State',
+    'AccumulatedDeltaRangeState',
+    'AccumulatedDeltaRangeMeters',
+]
+
 # Frequencies are reported with device-specific jitter. The tolerance is wide
 # enough for that jitter but narrow enough to keep adjacent GNSS signals apart.
 SIGNAL_BAND_DEFINITIONS = {
@@ -508,7 +520,7 @@ def write_missing_report(final_df, output_path):
     logging.info(f"Missing-rate report saved to: {missing_path}")
 
 
-def run_full_pipeline(config, include_unreviewed=False):
+def run_full_pipeline(config, include_unreviewed=False, include_dynamic_raw_features=False):
     """Run the complete preprocessing pipeline."""
     logging.info("=" * 60)
     logging.info("GNSS Preprocessing Pipeline - Full Mode")
@@ -568,6 +580,9 @@ def run_full_pipeline(config, include_unreviewed=False):
         'CarrierFrequencyHzRounded', 'CodeType', 'signal_id', 'SpoofingType',
         'Label', 'LabelStatus', 'LabelSource', 'AgcDbMissing'
     ] + FEATURE_COLS)
+
+    if include_dynamic_raw_features:
+        final_columns = list(dict.fromkeys([*final_columns, *DYNAMIC_RAW_FEATURE_COLS]))
     
     available_cols = [c for c in final_columns if c in final_df.columns]
     final_df = final_df[available_cols]
@@ -657,6 +672,13 @@ def main():
         '--include-unreviewed', action='store_true',
         help='Include sessions without reviewed labels. Intended only for diagnostics.',
     )
+    parser.add_argument(
+        '--include-dynamic-raw-features', action='store_true',
+        help=(
+            'Retain raw pseudorange-rate, State and ADR fields in the output CSV. '
+            'This is opt-in so the historical compact CSV remains unchanged.'
+        ),
+    )
     args = parser.parse_args()
     
     # Load config
@@ -678,7 +700,11 @@ def main():
     
     # Execute mode
     if args.mode == 'full' or args.mode == 'csv':
-        run_full_pipeline(config, include_unreviewed=args.include_unreviewed)
+        run_full_pipeline(
+            config,
+            include_unreviewed=args.include_unreviewed,
+            include_dynamic_raw_features=args.include_dynamic_raw_features,
+        )
     elif args.mode == 'plot':
         if not args.input:
             logging.error("--input required for plot mode")
