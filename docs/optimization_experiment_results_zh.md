@@ -169,3 +169,15 @@ R2 已在 `fold_1、fold_2、fold_4、fold_5、fold_6、fold_7` 完成复验；`
 4. Fold 2 的 anomaly recall 仍只有 50%，Pixel6 在 Fold 6 的 direct recall 仍很低，说明 R2 还没有解决所有设备差异问题。
 
 因此，R2 暂定为当前设备响应分支的最佳候选特征集，但下一步仍需做“设备能力掩码”实验，而不是直接冻结为最终方案。
+
+## 4. R3 实验口径修正
+
+第一次运行的 `initial_baseline_delta_with_capability` 实际保留了完整跨频段差值/耦合特征，因此它表示“**O0 + 能力掩码**”，不是计划中的“**R2 + 能力掩码**”。该运行结果不纳入 R2/R3 对照，也不用于方案选择。
+
+已补充严格版本：
+
+```text
+initial_baseline_delta_no_cross_with_capability
+```
+
+它只在 R2 特征基础上追加 `capability_has_l5` 和 `capability_has_agc`，将作为正式 R3 重新运行。
