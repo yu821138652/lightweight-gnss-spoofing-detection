@@ -25,6 +25,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device-root", type=Path, default=ROOT / "output" / "tensors" / "static_response_state_v1")
     parser.add_argument("--training-root", type=Path, default=ROOT / "output" / "hierarchical_event_v1" / "static_response_state_v1")
     parser.add_argument("--device-aggregate-profile", choices=("robust", "sparse_extreme"), default="sparse_extreme")
+    parser.add_argument(
+        "--feature-set",
+        choices=("initial_baseline_delta_with_device", "initial_baseline_delta_only", "initial_baseline_delta_l1_with_device"),
+        default="initial_baseline_delta_with_device",
+        help="device-response feature set; use initial_baseline_delta_only for the R1 no-device-identity ablation",
+    )
     parser.add_argument("--initial-baseline-windows", type=int, default=30)
     parser.add_argument("--hidden-dim", type=int, default=32)
     parser.add_argument("--epochs", type=int, default=60)
@@ -53,15 +59,26 @@ def run(command: list[str], dry_run: bool) -> None:
         subprocess.run(command, cwd=ROOT, check=True)
 
 
+def feature_tag(feature_set: str, aggregate_profile: str, baseline_windows: int) -> str:
+    """Create a stable, readable output tag without changing the default path."""
+    profile = aggregate_profile.replace("_extreme", "")
+    suffixes = {
+        "initial_baseline_delta_with_device": "device",
+        "initial_baseline_delta_only": "baseline_only",
+        "initial_baseline_delta_l1_with_device": "l1_device",
+    }
+    return f"{profile}_initial{baseline_windows}_{suffixes[feature_set]}"
+
+
 def main() -> None:
     args = parse_args()
     signal_dir = args.signal_root / args.fold
     if not signal_dir.exists():
         raise FileNotFoundError(f"Missing signal tensor directory: {signal_dir}")
-    feature_tag = f"{args.device_aggregate_profile.replace('_extreme', '')}_initial{args.initial_baseline_windows}_device"
-    device_dir = args.device_root / args.fold / f"device_tensors_{feature_tag}"
+    tag = feature_tag(args.feature_set, args.device_aggregate_profile, args.initial_baseline_windows)
+    device_dir = args.device_root / args.fold / f"device_tensors_{tag}"
     fold_train_root = args.training_root / args.fold
-    flat_dir = fold_train_root / f"mlp_{feature_tag}_h{args.hidden_dim}"
+    flat_dir = fold_train_root / f"mlp_{tag}_h{args.hidden_dim}"
     direct_dir = fold_train_root / f"direct_expert_mlp_h{args.hidden_dim}"
     override_dir = fold_train_root / f"direct_override_mlp_h{args.hidden_dim}_valcal_all"
     python_exe = str(args.python_exe)
@@ -70,7 +87,7 @@ def main() -> None:
         python_exe, str(ROOT / "pipeline_total" / "36_build_device_attack_event_tensors.py"),
         "--signal-data-dir", str(signal_dir),
         "--output-dir", str(device_dir),
-        "--feature-set", "initial_baseline_delta_with_device",
+        "--feature-set", args.feature_set,
         "--device-aggregate-profile", args.device_aggregate_profile,
         "--initial-baseline-windows", str(args.initial_baseline_windows),
         "--initial-baseline-policy", "exclude_stream",
