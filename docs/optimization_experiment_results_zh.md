@@ -89,3 +89,50 @@ R1 不能直接替代 O0，原因是：
 
 如果能力掩码能够恢复 R1 丢失的 abnormal/anomaly recall，同时保持较低 FAR，就优先采用“能力条件化”而不是“设备身份条件化”。
 
+## 3. R2：去掉跨频段差值与耦合特征
+
+### 3.1 配置
+
+```text
+sparse_extreme
++ initial_baseline_delta_no_cross
++ 保留 device_is_*
++ 初始正常基线 30 个窗口
++ MLP hidden=32
++ 三分类响应分支 + direct expert 后覆盖
+```
+
+R2 删除所有 `initial_baseline_delta_l5_minus_*` 和 `initial_baseline_delta_coupled_*` 特征，保留其余基础聚合特征和设备 one-hot。
+
+### 3.2 Fold 6 结果
+
+| 指标 | O0 基线 | R1 去设备编码 | R2 去跨频段特征 |
+|---|---:|---:|---:|
+| Macro-F1 | 0.8529 | 0.8679 | **0.8760** |
+| FAR | 2.85% | **0.87%** | **1.45%** |
+| abnormal recall | 91.73% | 81.34% | **91.78%** |
+| anomaly recall | 97.52% | 88.39% | **98.26%** |
+| direct recall | 65.36% | 68.09% | **68.59%** |
+| direct threshold | 0.1 | 0.2 | 0.1 |
+
+### 3.3 逐设备结果
+
+| 设备 | O0 abnormal | R2 abnormal | O0 direct | R2 direct |
+|---|---:|---:|---:|---:|
+| Google Pixel6 | 82.94% | 66.39% | 10.14% | 2.36% |
+| Google Pixel Watch1 | 96.51% | 98.26% | n/a | n/a |
+| Google Pixel Watch2 | 98.66% | 98.39% | n/a | n/a |
+| HUAWEI Mate40 | 97.99% | 97.99% | 96.24% | 95.57% |
+| RedMi K60 | 97.37% | 97.06% | 91.65% | 96.14% |
+| XiaoMi MI8 | 36.15% | **78.87%** | 30.99% | **74.65%** |
+
+### 3.4 结论
+
+R2 在 Fold 6 上优于 O0 的 pooled 结果：三类 recall 均不下降，FAR 降低，Macro-F1 提升。但逐设备结果仍不均衡：
+
+- MI8 和 RedMi 获得明显改善；
+- Watch 基本稳定；
+- Pixel6 的 direct 和 abnormal 明显下降；
+- 因此不能只根据 Fold 6 的 pooled 分数把 R2 定为最终版本。
+
+当前判断是：跨频段差值/耦合特征在现有响应分支中可能引入设备相关噪声，尤其影响 MI8；但它们对 Pixel6 可能提供了有用信息。R2 应作为候选版本扩展到其余有效 fold 复验，之后再决定是否进入能力掩码或物理特征实验。
