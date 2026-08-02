@@ -256,3 +256,28 @@ MLP-h16 已恢复大部分非线性建模能力，在 Fold 6 上 Macro-F1 略高
 - 若优先低误报和模型大小，MLP-h16 更有吸引力；
 - 若优先整体异常发现和 direct recall，MLP-h32 更稳妥；
 - 不能只按 Macro-F1 选择，应在其余有效 fold 上比较最差设备 recall 和 TTD。
+
+## 8. 模型规模实验：R2 + MLP-h8
+
+### 8.1 Fold 6 结果
+
+| 指标 | R2 + MLP-h8 | R2 + MLP-h16 | R2 + MLP-h32 |
+|---|---:|---:|---:|
+| Macro-F1 | 0.8656 | **0.8765** | 0.8760 |
+| FAR | 3.18% | **0.89%** | 1.45% |
+| abnormal recall | 89.31% | 89.07% | **91.78%** |
+| anomaly recall | 98.39% | **98.59%** | 98.26% |
+| direct recall | 66.95% | 66.64% | **68.59%** |
+| direct threshold | 0.4 | 0.1 | 0.1 |
+| base checkpoint | **约4.7 KB** | 约7.5 KB | 约12.9 KB |
+
+### 8.2 结论
+
+MLP-h8 虽然参数和权重最小，但 FAR 明显高于 h16，Macro-F1 也下降。因此 h8 暂不作为主要候选。
+
+当前模型规模候选收敛为：
+
+- **MLP-h16**：轻量化优先候选，权重约 7.5 KB；
+- **MLP-h32**：性能优先候选，abnormal/direct recall 更高。
+
+下一步不再继续在 Fold 6 上试更多 hidden size，而是将 h16 和 h32 扩展到其余有效 fold，比较跨 Session、逐设备和 TTD 的稳定性。
