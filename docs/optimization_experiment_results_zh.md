@@ -231,3 +231,28 @@ R2 特征维度为 81。线性模型约有 246 个三分类参数和 164 个 dir
 线性模型虽然保留了 anomaly recall，但 direct recall 下降约 20 个百分点，abnormal recall 下降约 11 个百分点，且 FAR 上升。因此当前设备响应任务需要一定的非线性建模能力，不能直接用线性模型替代 MLP。
 
 线性模型仍可作为轻量化下界对照；下一步继续测试 MLP hidden=16，再根据性能损失判断是否可以从 hidden=32 压缩到更小模型。
+
+## 7. 模型规模实验：R2 + MLP-h16
+
+### 7.1 Fold 6 结果
+
+| 指标 | R2 + Linear | R2 + MLP-h16 | R2 + MLP-h32 |
+|---|---:|---:|---:|
+| Macro-F1 | 0.7952 | **0.8765** | 0.8760 |
+| FAR | 3.72% | **0.89%** | 1.45% |
+| abnormal recall | 81.01% | 89.07% | **91.78%** |
+| anomaly recall | 98.52% | 98.59% | 98.26% |
+| direct recall | 48.43% | 66.64% | **68.59%** |
+| direct threshold | 0.5 | 0.1 | 0.1 |
+| base checkpoint | 约 2.4 KB | **约 7.5 KB** | 约 12.9 KB |
+| direct checkpoint | 约 2.4 KB | **约 7.4 KB** | 约 12.9 KB |
+
+### 7.2 结论
+
+MLP-h16 已恢复大部分非线性建模能力，在 Fold 6 上 Macro-F1 略高于 h32，FAR 更低，模型权重约为 h32 的 58%。但 abnormal recall 和 direct recall 分别低约 2.7 和 1.9 个百分点。
+
+因此当前存在一个明确的轻量化权衡：
+
+- 若优先低误报和模型大小，MLP-h16 更有吸引力；
+- 若优先整体异常发现和 direct recall，MLP-h32 更稳妥；
+- 不能只按 Macro-F1 选择，应在其余有效 fold 上比较最差设备 recall 和 TTD。
