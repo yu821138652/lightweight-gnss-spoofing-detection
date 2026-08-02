@@ -28,7 +28,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model", choices=("linear", "mlp"), default="mlp")
     parser.add_argument(
         "--feature-set",
-        choices=("initial_baseline_delta_with_device", "initial_baseline_delta_only", "initial_baseline_delta_l1_with_device", "initial_baseline_delta_no_cross", "initial_baseline_delta_with_capability", "initial_baseline_delta_no_cross_with_capability"),
+        choices=("initial_baseline_delta_with_device", "initial_baseline_delta_only", "initial_baseline_delta_l1_with_device", "initial_baseline_delta_no_cross", "initial_baseline_delta_cn0_compact", "initial_baseline_delta_cn0_extreme", "initial_baseline_delta_with_capability", "initial_baseline_delta_no_cross_with_capability"),
         default="initial_baseline_delta_with_device",
         help="device-response feature set; use initial_baseline_delta_only for the R1 no-device-identity ablation",
     )
@@ -68,6 +68,8 @@ def feature_tag(feature_set: str, aggregate_profile: str, baseline_windows: int)
         "initial_baseline_delta_only": "baseline_only",
         "initial_baseline_delta_l1_with_device": "l1_device",
         "initial_baseline_delta_no_cross": "no_cross",
+        "initial_baseline_delta_cn0_compact": "cn0_compact",
+        "initial_baseline_delta_cn0_extreme": "cn0_extreme",
         "initial_baseline_delta_with_capability": "capability",
         "initial_baseline_delta_no_cross_with_capability": "no_cross_capability",
     }

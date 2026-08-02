@@ -4,7 +4,7 @@
 The pipeline has two separately supervised branches under the *same* outer
 static recording-holdout folds:
 
-1. a no-AGC dual-band scene classifier (normal / L1 / L5 / L1+L5), and
+1. a configurable dual-band scene classifier (normal / L1 / L5 / L1+L5), and
 2. an all-device response-state classifier (normal / anomaly / direct).
 
 After their outer-test predictions are exported, script 50 aligns the endpoint
@@ -56,6 +56,15 @@ def parse_args() -> argparse.Namespace:
         default=ROOT / "output" / "hierarchical_event_v1" / "static_scene_response_fusion_v1" / "fusion",
     )
     parser.add_argument("--band-epochs", type=int, default=40)
+    parser.add_argument(
+        "--band-drop-features", type=str, nargs="+", default=["AgcDb"],
+        help=(
+            "Feature suffixes removed from both L1/L5 scene inputs. "
+            "Default: AgcDb (the established no-AGC baseline). "
+            "Use AgcDb ReceivedSvTimeUncertaintyNanos "
+            "PseudorangeRateUncertaintyMetersPerSecond for C/N0-only."
+        ),
+    )
     parser.add_argument("--response-epochs", type=int, default=60)
     parser.add_argument("--seed", type=int, default=2026)
     parser.add_argument("--skip-existing-band", action="store_true")
@@ -94,7 +103,7 @@ def main() -> None:
         "--folds", *[str(fold) for fold in folds],
         "--tensors-root", str(args.band_tensors_root),
         "--training-root", str(args.band_training_root),
-        "--drop-features", "AgcDb",
+        "--drop-features", *args.band_drop_features,
         "--epochs", str(args.band_epochs),
         "--seed", str(args.seed),
     ]
