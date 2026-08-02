@@ -181,3 +181,31 @@ initial_baseline_delta_no_cross_with_capability
 ```
 
 它只在 R2 特征基础上追加 `capability_has_l5` 和 `capability_has_agc`，将作为正式 R3 重新运行。
+
+## 5. R3：R2 + 设备能力掩码正式结果
+
+### 5.1 Fold 6 结果
+
+| 指标 | O0 基线 | R2 去跨频段 | R3 R2+能力掩码 |
+|---|---:|---:|---:|
+| Macro-F1 | 0.8529 | **0.8760** | 0.8004 |
+| FAR | 2.85% | **1.45%** | 10.86% |
+| abnormal recall | 91.73% | **91.78%** | 90.97% |
+| anomaly recall | 97.52% | **98.26%** | 91.14% |
+| direct recall | 65.36% | **68.59%** | 66.09% |
+| direct threshold | 0.1 | 0.1 | 0.05 |
+
+### 5.2 结论
+
+R3 在严格口径下明显劣于 R2：
+
+- FAR 从 1.45% 升至 10.86%；
+- Macro-F1 下降约 7.6 个百分点；
+- anomaly recall 下降约 7.1 个百分点；
+- direct recall 也没有提升。
+
+能力掩码虽然比设备 one-hot 更抽象，但在当前训练/测试设备和 Session 分布下仍然形成了不稳定的设备条件捷径。它不能作为当前响应分支的改进方向，R3 记为负结果并停止扩展。
+
+当前响应分支候选仍为 R2：`initial_baseline_delta_no_cross + MLP-h32`。
+
+下一步转向**模型规模消融**：固定 R2 特征，比较 MLP hidden=8、16、32 以及线性模型，寻找更小而性能不明显下降的模型。
