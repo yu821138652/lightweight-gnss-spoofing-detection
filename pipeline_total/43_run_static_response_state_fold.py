@@ -25,6 +25,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device-root", type=Path, default=ROOT / "output" / "tensors" / "static_response_state_v1")
     parser.add_argument("--training-root", type=Path, default=ROOT / "output" / "hierarchical_event_v1" / "static_response_state_v1")
     parser.add_argument("--device-aggregate-profile", choices=("robust", "sparse_extreme"), default="sparse_extreme")
+    parser.add_argument("--model", choices=("linear", "mlp"), default="mlp")
     parser.add_argument(
         "--feature-set",
         choices=("initial_baseline_delta_with_device", "initial_baseline_delta_only", "initial_baseline_delta_l1_with_device", "initial_baseline_delta_no_cross", "initial_baseline_delta_with_capability", "initial_baseline_delta_no_cross_with_capability"),
@@ -81,12 +82,12 @@ def main() -> None:
     tag = feature_tag(args.feature_set, args.device_aggregate_profile, args.initial_baseline_windows)
     device_dir = args.device_root / args.fold / f"device_tensors_{tag}"
     fold_train_root = args.training_root / args.fold
-    flat_dir = fold_train_root / f"mlp_{tag}_h{args.hidden_dim}"
+    flat_dir = fold_train_root / f"{args.model}_{tag}_h{args.hidden_dim}"
     # Keep the historical default paths stable, but isolate every non-default
     # feature ablation so its direct expert cannot overwrite another run.
     suffix = "" if args.feature_set == "initial_baseline_delta_with_device" else f"_{tag}"
-    direct_dir = fold_train_root / f"direct_expert{suffix}_mlp_h{args.hidden_dim}"
-    override_dir = fold_train_root / f"direct_override{suffix}_mlp_h{args.hidden_dim}_valcal_all"
+    direct_dir = fold_train_root / f"direct_expert{suffix}_{args.model}_h{args.hidden_dim}"
+    override_dir = fold_train_root / f"direct_override{suffix}_{args.model}_h{args.hidden_dim}_valcal_all"
     python_exe = str(args.python_exe)
 
     build_cmd = [
@@ -103,7 +104,7 @@ def main() -> None:
     run(build_cmd, args.dry_run)
 
     train_common = [
-        "--model", "mlp",
+        "--model", args.model,
         "--hidden-dim", str(args.hidden_dim),
         "--epochs", str(args.epochs),
         "--batch-size", str(args.batch_size),
@@ -117,7 +118,7 @@ def main() -> None:
         "--num-classes", "3",
         *train_common,
     ], args.dry_run)
-    flat_checkpoint = flat_dir / "best_device_event_mlp.pt"
+    flat_checkpoint = flat_dir / f"best_device_event_{args.model}.pt"
     run([
         python_exe, str(ROOT / "pipeline_total" / "37_train_device_attack_event.py"),
         "--data-dir", str(device_dir),
@@ -136,7 +137,7 @@ def main() -> None:
         "--num-classes", "2",
         *train_common,
     ], args.dry_run)
-    direct_checkpoint = direct_dir / "best_device_event_mlp.pt"
+    direct_checkpoint = direct_dir / f"best_device_event_{args.model}.pt"
     run([
         python_exe, str(ROOT / "pipeline_total" / "42_eval_response_state_direct_override.py"),
         "--data-dir", str(device_dir),
