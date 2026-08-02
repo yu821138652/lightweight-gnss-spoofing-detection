@@ -60,6 +60,9 @@ RAW_FEATURE_SETS: dict[str, tuple[str, ...]] = {
     "no_agc_cn0": tuple(
         name for name in RAW_FEATURE_NAMES if name not in {"AgcDb", "Cn0DbHz"}
     ),
+    # Cn0-only probe: keep only C/N0 plus FreqBand (label semantics), matching the
+    # band-mean four-way finding that C/N0 is the sole cross-recording feature.
+    "cn0_only": ("Cn0DbHz", "FreqBand"),
     # E8: preserve the historical five-feature baseline and append only
     # online causal reference features emitted by the static tensor builder.
     "causal_reference": tuple(RAW_FEATURE_NAMES) + (
@@ -72,6 +75,7 @@ RAW_FEATURE_SETS: dict[str, tuple[str, ...]] = {
 }
 STATS_FEATURE_SETS = (
     "full",
+    "cn0_only",
     "cn0_agc_coverage",
     "cn0_agc_coverage_rx_time_std",
     "cn0_coverage_rx_time_std",
@@ -147,6 +151,12 @@ def select_stats_feature_names(
     """
     if feature_set == "full":
         selected = available_names.copy()
+    elif feature_set == "cn0_only":
+        # Pure C/N0 branch: keep only the four Cn0DbHz*W5 statistics, matching
+        # the band-mean line of work that found C/N0 is the sole cross-recording
+        # transferable feature. IsL5, coverage ratios, AGC, and all uncertainty
+        # statistics are dropped.
+        selected = [name for name in available_names if name.startswith("Cn0DbHz")]
     elif feature_set in {
         "cn0_agc_coverage",
         "cn0_agc_coverage_rx_time_std",
