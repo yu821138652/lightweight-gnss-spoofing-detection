@@ -209,3 +209,25 @@ R3 在严格口径下明显劣于 R2：
 当前响应分支候选仍为 R2：`initial_baseline_delta_no_cross + MLP-h32`。
 
 下一步转向**模型规模消融**：固定 R2 特征，比较 MLP hidden=8、16、32 以及线性模型，寻找更小而性能不明显下降的模型。
+
+## 6. 模型规模实验：R2 + Linear
+
+### 6.1 Fold 6 结果
+
+R2 特征维度为 81。线性模型约有 246 个三分类参数和 164 个 direct expert 参数，权重文件约 2.4 KB；R2 的 MLP-h32 checkpoint 约 12.9 KB。
+
+| 指标 | R2 + MLP-h32 | R2 + Linear |
+|---|---:|---:|
+| Macro-F1 | **0.8760** | 0.7952 |
+| FAR | **1.45%** | 3.72% |
+| abnormal recall | **91.78%** | 81.01% |
+| anomaly recall | 98.26% | **98.52%** |
+| direct recall | **68.59%** | 48.43% |
+| direct threshold | 0.1 | 0.5 |
+| 模型权重大小 | 约 12.9 KB | **约 2.4 KB** |
+
+### 6.2 结论
+
+线性模型虽然保留了 anomaly recall，但 direct recall 下降约 20 个百分点，abnormal recall 下降约 11 个百分点，且 FAR 上升。因此当前设备响应任务需要一定的非线性建模能力，不能直接用线性模型替代 MLP。
+
+线性模型仍可作为轻量化下界对照；下一步继续测试 MLP hidden=16，再根据性能损失判断是否可以从 hidden=32 压缩到更小模型。
