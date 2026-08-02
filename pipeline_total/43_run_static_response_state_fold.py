@@ -80,8 +80,11 @@ def main() -> None:
     device_dir = args.device_root / args.fold / f"device_tensors_{tag}"
     fold_train_root = args.training_root / args.fold
     flat_dir = fold_train_root / f"mlp_{tag}_h{args.hidden_dim}"
-    direct_dir = fold_train_root / f"direct_expert_mlp_h{args.hidden_dim}"
-    override_dir = fold_train_root / f"direct_override_mlp_h{args.hidden_dim}_valcal_all"
+    # Keep the historical default paths stable, but isolate every non-default
+    # feature ablation so its direct expert cannot overwrite another run.
+    suffix = "" if args.feature_set == "initial_baseline_delta_with_device" else f"_{tag}"
+    direct_dir = fold_train_root / f"direct_expert{suffix}_mlp_h{args.hidden_dim}"
+    override_dir = fold_train_root / f"direct_override{suffix}_mlp_h{args.hidden_dim}_valcal_all"
     python_exe = str(args.python_exe)
 
     build_cmd = [
