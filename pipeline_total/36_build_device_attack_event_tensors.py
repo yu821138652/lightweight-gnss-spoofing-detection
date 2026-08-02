@@ -44,7 +44,7 @@ def parse_args() -> argparse.Namespace:
         help="signal-to-device aggregation; sparse_extreme retains rare strong cross-band changes",
     )
     parser.add_argument(
-        "--feature-set", choices=("all", "l1_only", "l5_only", "no_cross", "causal_delta_only", "causal_delta_with_device", "initial_baseline_delta_only", "initial_baseline_delta_with_device", "initial_baseline_delta_l1_with_device", "initial_baseline_delta_no_cross"), default="all",
+        "--feature-set", choices=("all", "l1_only", "l5_only", "no_cross", "causal_delta_only", "causal_delta_with_device", "initial_baseline_delta_only", "initial_baseline_delta_with_device", "initial_baseline_delta_l1_with_device", "initial_baseline_delta_no_cross", "initial_baseline_delta_with_capability"), default="all",
     )
     parser.add_argument(
         "--causal-reference-windows", type=int, default=0,
@@ -263,6 +263,11 @@ def select_feature_indices(names: list[str], feature_set: str) -> list[int]:
             if not name.startswith("initial_baseline_delta_l5_minus_")
             and not name.startswith("initial_baseline_delta_coupled_")
         ]
+    elif feature_set == "initial_baseline_delta_with_capability":
+        selected = [
+            name for name in names
+            if name.startswith("initial_baseline_delta_") or name.startswith("capability_")
+        ]
     else:
         selected = [name for name in names if name.startswith("causal_delta_") or name.startswith("device_is_")]
     if not selected:
@@ -441,6 +446,42 @@ def append_device_one_hot(data: dict[str, np.ndarray], device_count: int) -> lis
     data["x"] = np.concatenate((data["x"], one_hot), axis=1).astype(np.float32)
     return [f"device_is_{device_id}" for device_id in range(device_count)]
 
+
+def append_device_capability_masks(
+    datasets: dict[str, dict[str, np.ndarray]], feature_names: list[str]
+) -> tuple[list[str], dict[str, dict[str, float]]]:
+    """Append train-derived L5/AGC capability masks without device identity."""
+    required = ("l5_log_signal_count", "l1_agc_observed_median")
+    missing = [name for name in required if name not in feature_names]
+    if missing:
+        raise ValueError(f"Cannot derive device capability masks; missing {missing}")
+    all_ids = [data["device_id"] for data in datasets.values() if len(data["device_id"])]
+    train_ids = datasets["train"]["device_id"].astype(np.int64)
+    if not all_ids or len(train_ids) == 0:
+        raise ValueError("Cannot derive device capability masks without train/device windows")
+    device_count = max(int(values.max()) for values in all_ids) + 1
+    l5_index = feature_names.index("l5_log_signal_count")
+    agc_index = feature_names.index("l1_agc_observed_median")
+    capabilities = np.zeros((device_count, 2), dtype=np.float32)
+    metadata: dict[str, dict[str, float]] = {}
+    train_x = datasets["train"]["x"]
+    for device_id in range(device_count):
+        rows = train_ids == device_id
+        if np.any(rows):
+            l5_values = train_x[rows, l5_index]
+            agc_values = train_x[rows, agc_index]
+            has_l5 = bool(np.any(np.isfinite(l5_values) & (l5_values > 0.0)))
+            has_agc = bool(np.any(np.isfinite(agc_values) & (agc_values > 0.0)))
+        else:
+            has_l5 = False
+            has_agc = False
+        capabilities[device_id] = (float(has_l5), float(has_agc))
+        metadata[str(device_id)] = {"has_l5": float(has_l5), "has_agc": float(has_agc)}
+    for data in datasets.values():
+        masks = capabilities[data["device_id"].astype(np.int64)]
+        data["x"] = np.concatenate((data["x"], masks), axis=1).astype(np.float32)
+    return ["capability_has_l5", "capability_has_agc"], metadata
+
 def scale_train_only(datasets: dict[str, dict[str, np.ndarray]]) -> dict[str, list[float]]:
     train_x = datasets["train"]["x"]
     if len(train_x) == 0:
@@ -461,7 +502,7 @@ def main() -> None:
     args = parse_args()
     if args.causal_reference_windows < 0 or args.initial_baseline_windows < 0:
         raise ValueError("reference window counts must be non-negative")
-    if args.feature_set in ("initial_baseline_delta_only", "initial_baseline_delta_with_device", "initial_baseline_delta_l1_with_device") and args.initial_baseline_windows == 0:
+    if args.feature_set in ("initial_baseline_delta_only", "initial_baseline_delta_with_device", "initial_baseline_delta_l1_with_device", "initial_baseline_delta_no_cross", "initial_baseline_delta_with_capability") and args.initial_baseline_windows == 0:
         raise ValueError("initial baseline feature sets require --initial-baseline-windows")
     if args.output_dir.exists() and any(args.output_dir.iterdir()) and not args.overwrite:
         raise FileExistsError(f"Output directory is not empty: {args.output_dir}")
@@ -521,6 +562,10 @@ def main() -> None:
         elif baseline_names != candidate_names:
             raise RuntimeError("Initial baseline feature contract differs between splits")
     feature_names = baseline_names or feature_names
+    capability_metadata: dict[str, dict[str, float]] = {}
+    if args.feature_set == "initial_baseline_delta_with_capability":
+        capability_names, capability_metadata = append_device_capability_masks(datasets, feature_names)
+        feature_names = [*feature_names, *capability_names]
     if args.feature_set in ("causal_delta_with_device", "initial_baseline_delta_with_device", "initial_baseline_delta_l1_with_device"):
         device_count = max(int(data["device_id"].max()) for data in datasets.values() if len(data["device_id"])) + 1
         device_names: list[str] | None = None
@@ -554,6 +599,8 @@ def main() -> None:
         "initial_baseline_windows": args.initial_baseline_windows,
         "initial_baseline_policy": args.initial_baseline_policy,
         "initial_baseline_exclusions": initial_baseline_exclusions,
+        "capability_masks_source": "train_windows_only" if capability_metadata else None,
+        "capability_masks": capability_metadata,
         "feature_names": feature_names,
         "device_mapping": read_json(args.signal_data_dir / "device_mapping.json"),
         "recordings": trace["recordings"],
