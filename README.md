@@ -92,6 +92,7 @@ python pipeline_total/19_generate_static_timeblock_protocol.py
 
 - [当前交接状态](docs/handoff_status.md)：当前唯一状态入口；
 - [论文主线大纲](docs/paper_mainline_outline_zh.md)：论文题目、问题定义、方法、实验组织和结果表述边界；
+- [方案优化实验清单](docs/optimization_experiment_plan_zh.md)：特征消融、模型比较、融合、轻量化和检测时延实验顺序；
 - [P0–P5 历史实验台账](docs/experiment_registry.md)：旧设备级路线与结果边界；
 - [信号级特征提取](docs/signal_level_feature_extraction.md)：统一 CSV 与逐 signal 数据语义；
 - [动态标签辅助](docs/dynamic_labeling_assistant.md)：新主楼动态场景复核流程；
