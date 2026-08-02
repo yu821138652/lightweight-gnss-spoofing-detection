@@ -44,7 +44,7 @@ def parse_args() -> argparse.Namespace:
         help="signal-to-device aggregation; sparse_extreme retains rare strong cross-band changes",
     )
     parser.add_argument(
-        "--feature-set", choices=("all", "l1_only", "l5_only", "no_cross", "causal_delta_only", "causal_delta_with_device", "initial_baseline_delta_only", "initial_baseline_delta_with_device", "initial_baseline_delta_l1_with_device"), default="all",
+        "--feature-set", choices=("all", "l1_only", "l5_only", "no_cross", "causal_delta_only", "causal_delta_with_device", "initial_baseline_delta_only", "initial_baseline_delta_with_device", "initial_baseline_delta_l1_with_device", "initial_baseline_delta_no_cross"), default="all",
     )
     parser.add_argument(
         "--causal-reference-windows", type=int, default=0,
@@ -257,6 +257,12 @@ def select_feature_indices(names: list[str], feature_set: str) -> list[int]:
         selected = [name for name in names if name.startswith("initial_baseline_delta_") or name.startswith("device_is_")]
     elif feature_set == "initial_baseline_delta_l1_with_device":
         selected = [name for name in names if name.startswith("initial_baseline_delta_l1_") or name.startswith("device_is_")]
+    elif feature_set == "initial_baseline_delta_no_cross":
+        selected = [
+            name for name in names
+            if not name.startswith("initial_baseline_delta_l5_minus_")
+            and not name.startswith("initial_baseline_delta_coupled_")
+        ]
     else:
         selected = [name for name in names if name.startswith("causal_delta_") or name.startswith("device_is_")]
     if not selected:
