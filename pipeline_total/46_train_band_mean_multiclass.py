@@ -2,7 +2,7 @@
 
 Consumes the tensors written by ``45_build_band_mean_window_tensors.py``::
 
-    data_dir/{train,val,test}.npz   # x=[B, T, 10], y in {0,1,2,3}, single_band_mask, ...
+    data_dir/{train,val,test}.npz   # x=[B, T, F], y in {0,1,2,3}, single_band_mask, ...
 
 The four scene classes are ``0=normal``, ``1=L1``, ``2=L5``, ``3=L1+L5``.  A
 window whose endpoint epoch observed only one physical band is flagged
@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import logging
 import random
@@ -66,6 +67,91 @@ def load_feature_names(data_dir: Path) -> list[str]:
     if not isinstance(names, list) or not all(isinstance(n, str) for n in names):
         raise ValueError(f"{path} must be a JSON list of feature names")
     return names
+
+
+def load_tensor_metadata(data_dir: Path) -> dict:
+    path = data_dir / "tensor_metadata.json"
+    if not path.is_file():
+        return {}
+    metadata = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(metadata, dict):
+        raise ValueError(f"{path} must contain a JSON object")
+    return metadata
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def tensor_contract(data_dir: Path) -> dict[str, str]:
+    """Fingerprint tensor artifacts that affect training or exported predictions."""
+    required = (
+        "feature_names.json",
+        "tensor_metadata.json",
+        "train.npz",
+        "val.npz",
+        "test.npz",
+    )
+    missing = [name for name in required if not (data_dir / name).is_file()]
+    if missing:
+        raise FileNotFoundError(
+            f"Tensor directory {data_dir} is missing contract artifacts: {missing}"
+        )
+    optional = (
+        "scaler.json", "normal_reference.json", "device_mapping.json", "source_mapping.json"
+    )
+    names = [*required, *[name for name in optional if (data_dir / name).is_file()]]
+    return {
+        name: sha256_file(data_dir / name)
+        for name in names
+    }
+
+
+def causal_contract(value: object) -> dict:
+    """Normalize legacy and expanded metadata for compatibility checks."""
+    if not isinstance(value, dict):
+        return {"mode": "none"}
+    mode = str(value.get("mode", "none"))
+    if mode == "none":
+        return {"mode": "none"}
+    return value
+
+
+def validate_tensor_contract(
+    checkpoint_contract: object, data_dir: Path, predict_split: str
+) -> None:
+    """Bind new checkpoints to their metadata/scaler and selected split bytes."""
+    if checkpoint_contract is None:
+        return  # Legacy checkpoints predate artifact fingerprints.
+    if not isinstance(checkpoint_contract, dict):
+        raise ValueError("Checkpoint tensor_contract must be a JSON-like object")
+    required = [
+        "feature_names.json",
+        "tensor_metadata.json",
+        f"{predict_split}.npz",
+    ]
+    if "scaler.json" in checkpoint_contract:
+        required.append("scaler.json")
+    for name in ("normal_reference.json", "device_mapping.json", "source_mapping.json"):
+        if name in checkpoint_contract:
+            required.append(name)
+    for name in required:
+        expected = checkpoint_contract.get(name)
+        path = data_dir / name
+        if not isinstance(expected, str) or not path.is_file():
+            raise ValueError(
+                f"Checkpoint tensor contract requires {name}, but it is missing or invalid"
+            )
+        actual = sha256_file(path)
+        if actual != expected:
+            raise ValueError(
+                f"Checkpoint/tensor artifact mismatch for {name}: "
+                f"checkpoint={expected}, tensor={actual}"
+            )
 
 
 def resolve_feature_selection(
@@ -143,7 +229,9 @@ def load_usable_split_traced(
     """
     if not path.is_file():
         raise FileNotFoundError(path)
-    trace_fields = ("recording_id", "device_id", "endpoint_tow", "window_time_nanos")
+    trace_fields = (
+        "recording_id", "source_id", "device_id", "endpoint_tow", "window_time_nanos",
+    )
     with np.load(path, allow_pickle=False) as data:
         missing = REQUIRED_ARRAYS.difference(data.files)
         if missing:
@@ -270,6 +358,10 @@ def parse_args() -> argparse.Namespace:
         help="With --test-only, the checkpoint to evaluate; defaults to output-dir/best_band_mean_window_<encoder>.pt.",
     )
     parser.add_argument(
+        "--predict-split", choices=("train", "val", "test"), default="test",
+        help="With --test-only, tensor split to predict; default preserves test export behavior.",
+    )
+    parser.add_argument(
         "--fold", type=int, default=None,
         help="Optional fold tag recorded in the exported test-prediction CSV.",
     )
@@ -302,6 +394,26 @@ def run_test_only(args: argparse.Namespace, device: torch.device) -> None:
         checkpoint = torch.load(checkpoint_path, map_location=device)
     if not isinstance(checkpoint, dict) or "state_dict" not in checkpoint:
         raise ValueError(f"Checkpoint {checkpoint_path} has no state_dict")
+    checkpoint_encoder = str(checkpoint.get("encoder", args.encoder))
+    if checkpoint_encoder != args.encoder:
+        raise ValueError(
+            f"Checkpoint encoder={checkpoint_encoder} does not match --encoder={args.encoder}"
+        )
+    tensor_metadata = load_tensor_metadata(args.data_dir)
+    tensor_scaler_mode = str(tensor_metadata.get("scaler_mode", "legacy_per_device"))
+    checkpoint_scaler_mode = str(checkpoint.get("scaler_mode", "legacy_per_device"))
+    if tensor_scaler_mode != checkpoint_scaler_mode:
+        raise ValueError(
+            "Checkpoint/tensor scaler mismatch: "
+            f"checkpoint={checkpoint_scaler_mode}, tensor={tensor_scaler_mode}"
+        )
+    tensor_causal = causal_contract(tensor_metadata.get("causal_baseline"))
+    checkpoint_causal = causal_contract(checkpoint.get("causal_baseline"))
+    if tensor_causal != checkpoint_causal:
+        raise ValueError(
+            "Checkpoint/tensor causal-baseline mismatch: "
+            f"checkpoint={checkpoint_causal}, tensor={tensor_causal}"
+        )
     time_steps = int(checkpoint["time_steps"])
     feature_dim = int(checkpoint["input_dim"])
     model = BandMeanWindowClassifier(
@@ -318,23 +430,33 @@ def run_test_only(args: argparse.Namespace, device: torch.device) -> None:
     # Reapply the exact feature ablation the checkpoint was trained with, so the
     # test tensor's feature axis matches the model's expected input dimension.
     all_names = load_feature_names(args.data_dir)
-    feature_indices, _ = resolve_feature_selection(all_names, checkpoint.get("drop_features"))
-    test = load_usable_split_traced(args.data_dir / "test.npz", feature_indices)
-    if test["x"].shape[1:] != (time_steps, feature_dim):
+    feature_indices, selected_names = resolve_feature_selection(
+        all_names, checkpoint.get("drop_features")
+    )
+    checkpoint_names = checkpoint.get("feature_names")
+    if checkpoint_names is not None and checkpoint_names != selected_names:
+        raise ValueError(
+            "Checkpoint/tensor feature order mismatch: "
+            f"checkpoint={checkpoint_names}, tensor={selected_names}"
+        )
+    split_name = args.predict_split
+    validate_tensor_contract(checkpoint.get("tensor_contract"), args.data_dir, split_name)
+    predicted = load_usable_split_traced(args.data_dir / f"{split_name}.npz", feature_indices)
+    if predicted["x"].shape[1:] != (time_steps, feature_dim):
         raise ValueError(
             f"Checkpoint expects [T,F]=({time_steps},{feature_dim}), "
-            f"test has {tuple(test['x'].shape[1:])}"
+            f"{split_name} has {tuple(predicted['x'].shape[1:])}"
         )
-    if len(test["y"]) == 0:
-        raise ValueError("Test split has no usable windows")
-    x = torch.from_numpy(test["x"]).to(device)
+    if len(predicted["y"]) == 0:
+        raise ValueError(f"{split_name} split has no usable windows")
+    x = torch.from_numpy(predicted["x"]).to(device)
     logits = model(x)
     probabilities = torch.softmax(logits, dim=1).cpu().numpy()
     preds = logits.argmax(-1).cpu().numpy()
-    y_true = test["y"]
+    y_true = predicted["y"]
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    predictions_path = args.output_dir / f"test_predictions_band_mean_window_{args.encoder}.csv"
+    predictions_path = args.output_dir / f"{split_name}_predictions_band_mean_window_{args.encoder}.csv"
     rows = len(y_true)
     mapping_path = args.data_dir / "device_mapping.json"
     device_names: dict[int, str] = {}
@@ -342,20 +464,23 @@ def run_test_only(args: argparse.Namespace, device: torch.device) -> None:
         mapping = json.loads(mapping_path.read_text(encoding="utf-8"))
         device_names = {int(value): str(name) for name, value in mapping.items()}
     fields = [
-        "fold", "recording_id", "device_id", "device_name", "endpoint_tow",
+        "fold", "recording_id", "source_id", "device_id", "device_name",
+        "window_time_nanos", "endpoint_tow",
         "true_class", "pred_class", *[f"prob_{CLASS_NAMES[c]}" for c in range(NUM_CLASSES)],
     ]
     with predictions_path.open("w", newline="", encoding="utf-8-sig") as handle:
         writer = csv.DictWriter(handle, fieldnames=fields)
         writer.writeheader()
         for i in range(rows):
-            device_id = int(test["device_id"][i]) if "device_id" in test else -1
+            device_id = int(predicted["device_id"][i]) if "device_id" in predicted else -1
             row = {
                 "fold": args.fold if args.fold is not None else "",
-                "recording_id": int(test["recording_id"][i]) if "recording_id" in test else "",
+                "recording_id": int(predicted["recording_id"][i]) if "recording_id" in predicted else "",
+                "source_id": int(predicted["source_id"][i]) if "source_id" in predicted else "",
                 "device_id": device_id if device_id >= 0 else "",
                 "device_name": device_names.get(device_id, ""),
-                "endpoint_tow": float(test["endpoint_tow"][i]) if "endpoint_tow" in test else "",
+                "window_time_nanos": int(predicted["window_time_nanos"][i]) if "window_time_nanos" in predicted else "",
+                "endpoint_tow": float(predicted["endpoint_tow"][i]) if "endpoint_tow" in predicted else "",
                 "true_class": int(y_true[i]),
                 "pred_class": int(preds[i]),
             }
@@ -363,8 +488,8 @@ def run_test_only(args: argparse.Namespace, device: torch.device) -> None:
             writer.writerow(row)
     present = sorted(set(y_true.tolist()))
     LOG.info(
-        "test-only fold=%s usable=%d classes_present=%s exported=%s",
-        args.fold, rows, [CLASS_NAMES[c] for c in present], predictions_path,
+        "test-only split=%s fold=%s usable=%d classes_present=%s exported=%s",
+        split_name, args.fold, rows, [CLASS_NAMES[c] for c in present], predictions_path,
     )
 
 
@@ -378,6 +503,11 @@ def main() -> None:
         return
 
     all_names = load_feature_names(args.data_dir)
+    tensor_metadata = load_tensor_metadata(args.data_dir)
+    scaler_mode = str(tensor_metadata.get("scaler_mode", "legacy_per_device"))
+    causal_baseline = tensor_metadata.get("causal_baseline", {"mode": "none"})
+    normal_reference = tensor_metadata.get("normal_reference", {"mode": "none"})
+    artifact_contract = tensor_contract(args.data_dir)
     feature_indices, feature_names = resolve_feature_selection(all_names, args.drop_features)
     if args.drop_features:
         LOG.info("feature ablation: dropped=%s kept=%s", sorted(args.drop_features), feature_names)
@@ -463,6 +593,11 @@ def main() -> None:
                     "train_class_counts": train_counts,
                     "feature_names": feature_names,
                     "drop_features": sorted(args.drop_features) if args.drop_features else [],
+                    "scaler_mode": scaler_mode,
+                    "data_scope": tensor_metadata.get("data_scope"),
+                    "causal_baseline": causal_baseline,
+                    "normal_reference": normal_reference,
+                    "tensor_contract": artifact_contract,
                 },
                 checkpoint_path,
             )

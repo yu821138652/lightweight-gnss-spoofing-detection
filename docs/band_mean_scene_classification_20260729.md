@@ -355,3 +355,406 @@ python pipeline_total/21_train_static_signal_fusion.py \
 | [49_plot_band_mean_permutation_importance.py](../pipeline_total/49_plot_band_mean_permutation_importance.py) | 置换重要性（多次重复取均值） |
 | [21_train_static_signal_fusion.py](../pipeline_total/21_train_static_signal_fusion.py) | 主线二分类；本轮新增 `cn0_only` raw 档与 `cn0_coverage_rx_time_std` stats 档用于边界条件对照 |
 | `models/gnss_signal_baselines.py::BandMeanWindowClassifier` | 窗口级四分类器（10 维输入时 5348 参数；4 维最佳配置更小） |
+
+---
+
+## 九、设备专属训练统计量消融（2026-08-04）
+
+### 9.1 问题与实验定义
+
+当前场景分支**确实使用了该设备训练集统计量**。对连续特征，默认处理是：
+
+```text
+x_scaled = (x - mean_of_this_device_train) / std_of_this_device_train
+```
+
+这里有三个容易混淆的边界：
+
+1. `mean/std` 只由本折 `train` 拟合，`val/test` 不参与，不存在直接的验证或测试泄漏。
+2. 它不是“该设备干净区间均值”，而是该设备全部训练窗口（正常与攻击都包含）的整体统计量。
+3. 拟合单位是重叠窗口中的 timestep，因此同一历元可能因窗口重叠被重复计入；更准确的名称是“该设备 train 窗口加权统计量”。
+
+“不用该设备训练集均值”采用如下严格 A/B：
+
+| 变体 | 连续特征标准化 | 部署所需统计量 |
+|---|---|---|
+| `per_device` | 每台设备使用本折 train-only `mean/std` | 每个已知设备一套 |
+| `global` | 所有设备共享本折全体 train-only `mean/std` | 全局一套 |
+
+没有把 raw/no-scale 混进主对照，因为完全不缩放会同时改变数值尺度，无法把变化只归因于去掉设备专属统计量。本实验切换的是一套完整、可部署的 scaler，所以均值和标准差一起从 per-device 改为 global；它回答“是否仍需要每台设备的训练统计量”，不是数学上只隔离减均值一项。
+
+### 9.2 固定实验条件
+
+| 项目 | 固定值 |
+|---|---|
+| 划分协议 | `mixed_timeblock_outer_cv4_w5_v2`，4 折 outer recording holdout |
+| 纯静态 | 同一协议，建张量时 `--scope static` |
+| 静态+动态 | 同一协议，建张量时 `--scope all` |
+| train/val | development recording 内按时间块划分，边界留 4 个 epoch guard |
+| 窗口 | `W=5`，严格因果窗口 |
+| 输入 | `L1_Cn0DbHz`、`L5_Cn0DbHz`、`L1Present`、`L5Present`，共 4 维 |
+| 模型 | TCN32，dropout 0.1，4 分类，4,772 参数 |
+| 训练 | seed 2026，最多 40 epoch，patience 8，batch 256，AdamW，反频率加权 CE |
+| 选点 | validation Macro-F1 |
+| 评估 | 汇总四折完整 outer test 预测后计算 4 类 Macro-F1 |
+
+两种 scaler 的标签、fold、窗口、设备、录制、时间戳及 `single_band_mask` 已逐项核对一致；只有连续输入值发生变化。纯静态汇总 28,217 个可用双频 test 窗口，静态+动态汇总 43,672 个。单频 endpoint 仍按既定规则排除在训练和指标之外。
+
+### 9.3 纯静态结果
+
+| 指标 | `per_device` | `global` | 去掉设备专属统计量后的变化 |
+|---|---:|---:|---:|
+| Test Macro-F1 | **0.991749** | 0.966601 | **-0.025148** |
+| Test Accuracy | **99.4471%** | 97.4200% | **-2.0271 pp** |
+| 错分窗口 | **156** | 728 | +572 |
+| normal recall | **0.998498** | 0.996530 | -0.001968 |
+| L1 recall | **0.983743** | 0.982076 | -0.001667 |
+| L5 recall | **0.985282** | 0.839767 | **-0.145515** |
+| L1+L5 recall | **0.987973** | 0.985911 | -0.002062 |
+
+损失几乎全部集中在 L5。逐设备追查发现，静态 aggregate 的差距主要由 Pixel6 的 L5 样本驱动：Pixel6 L5 recall 从 `per_device=0.9814` 降到 `global=0.0760`，设备总体 accuracy 从 99.36% 降到 83.82%。这说明汇总差值很大，但并非所有设备都同幅受益；例如 MI8 使用 global 时反而小幅提高约 0.10 个百分点。
+
+四折 validation Macro-F1 均值只从 `0.9752` 变为 `0.9739`，几乎没有发出警报；真正的差距出现在 outer test 的 Pixel6 L5 录制。这再次说明，同一 development recording 内切出的时间块 validation 适合选 checkpoint，但不能代替跨录制测试。
+
+### 9.4 静态+动态结果
+
+| 指标 | `per_device` | `global` | 去掉设备专属统计量后的变化 |
+|---|---:|---:|---:|
+| Test Macro-F1 | **0.925215** | 0.896820 | **-0.028395** |
+| Test Accuracy | **95.8944%** | 93.7763% | **-2.1181 pp** |
+| 错分窗口 | **1,793** | 2,718 | +925 |
+| normal recall | **0.979701** | 0.964345 | -0.015356 |
+| L1 recall | **0.901587** | 0.881074 | -0.020513 |
+| L5 recall | **0.907290** | 0.824486 | **-0.082804** |
+| L1+L5 recall | **0.887599** | 0.882101 | -0.005498 |
+
+mixed 下不是只有一个类别受益，normal、L1、L5 recall 都有明显改善；24 个 held-out recording 中，`per_device` accuracy 提高 15 个、持平 1 个、下降 8 个。不过设备差异仍然很强：Pixel6 总体 accuracy 提高 17.88 pp，而 MI8 反而下降 1.42 pp。`global` 的 L1+L5 F1 还略高于 `per_device`（0.9349 对 0.9195），来自更高 precision，而不是更高 recall。
+
+mixed 的四折 validation Macro-F1 均值为 `per_device=0.8633`、`global=0.8403`，与 outer test 的下降方向一致；因此 mixed 中去掉设备统计量造成的退化不只来自某一个测试折的偶发现象。
+
+### 9.5 CPU 推理开销
+
+测时环境为 Intel Core i7-14650HX、Python 3.8.10、PyTorch 2.4.1；固定 CPU 单线程。每个 checkpoint 预热 200 次，batch=1 测 1,000 次，batch=256 测 100 次。表中为四折结果的中位数：
+
+| 数据范围 / scaler | batch=1 p50 | batch=1 p95 | batch=256 p50 | 按 batch p50 折算吞吐 |
+|---|---:|---:|---:|---:|
+| static / `per_device` | 0.172 ms | 0.266 ms | 0.559 ms | 458k window/s |
+| static / `global` | 0.182 ms | 0.290 ms | 0.579 ms | 442k window/s |
+| mixed / `per_device` | 0.171 ms | 0.263 ms | 0.554 ms | 462k window/s |
+| mixed / `global` | 0.167 ms | 0.247 ms | 0.561 ms | 457k window/s |
+
+四组模型结构完全相同，均为 4,772 参数、checkpoint 24,628 bytes，理论计算量也相同。表中的约 0.01 ms 波动没有一致方向，应视为桌面 CPU 调度噪声，不能解释为某种 scaler 让模型更快。
+
+测时范围是**预构建并已标准化的 `[1, 5, 4]` 张量到四分类 logits 的模型前向**，不含原始日志解析、band mean 聚合和 scaler 应用。部署 4 维模型时，global 只需保存 4 个 C/N0 标量（两维各一个 mean/std）；per-device 则每台已知设备保存 4 个标量并做一次设备查表。两者相对模型前向都很小，但 global 的部署状态更简单。
+
+### 9.6 结论与适用边界
+
+在当前数据、当前 4 维 TCN32 和“测试设备型号在训练中出现过”的条件下，**不建议去掉设备专属训练统计量**：纯静态和 mixed 的 test Macro-F1 分别下降 0.0251 和 0.0284，已经不是零点零几以内的无意义波动；推理模型本体又没有获得可测的成本收益。
+
+但这个结论不能扩张为“per-device 对任何接收机都更好”：
+
+- 只有一个 seed，窗口高度重叠，28k/44k 不能当作独立同分布样本数。
+- 当前 outer test 隔离 recording，但设备身份在 train/test 重复；它评估的是**已知设备校准**，不是 unseen-device 泛化。
+- 未见设备在实现中会回退到 global scaler，因此当前收益不会自动迁移到新型号。
+- 静态总差距受 Pixel6 L5 强烈主导；mixed 更广泛受益，但 MI8 存在反例。
+
+所以工程决策是：场景分支当前继续保留 `per_device`；若目标改为“新设备无需校准即可部署”，应另做 leave-one-device-out 协议，而不是用本实验的 recording-CV 数字替代。
+
+### 9.7 实验产物与复现入口
+
+```text
+output/tensors/scene_scaler_ablation_v1/
+  static_per_device/fold_1..4
+  static_global/fold_1..4
+  mixed_per_device/fold_1..4
+  mixed_global/fold_1..4
+
+output/training/scene_scaler_ablation_v1/
+  <上述四个变体>/fold_1..4/
+    best_band_mean_window_tcn.pt
+    val_metrics_band_mean_window_tcn.json
+    test_predictions_band_mean_window_tcn.csv
+    runtime_cpu_1thread.json
+  <上述四个变体>/
+    aggregate_test_metrics.json
+    aggregate_test_predictions.csv
+```
+
+新增或扩展的入口：
+
+- [45_build_band_mean_window_tensors.py](../pipeline_total/45_build_band_mean_window_tensors.py)：新增 `--scaler-mode per_device|global`，并把 scaler fit 范围写入 metadata。
+- [46_train_band_mean_multiclass.py](../pipeline_total/46_train_band_mean_multiclass.py)：checkpoint 记录 scaler mode，test-only 校验 checkpoint 与 tensor 一致。
+- [47_aggregate_band_mean_cv.py](../pipeline_total/47_aggregate_band_mean_cv.py)：透传 `--scaler-mode`。
+- [56_measure_band_mean_runtime.py](../pipeline_total/56_measure_band_mean_runtime.py)：单线程 CPU 模型前向测时。
+
+等价的一体化复现命令如下。该入口会顺序执行各折；本次为缩短墙钟时间，将同一组参数拆成四个独立 fold 并行执行，结果汇总逻辑不变：
+
+```bash
+python pipeline_total/47_aggregate_band_mean_cv.py \
+    --protocol-dir output/protocols/mixed_timeblock_outer_cv4_w5_v2 \
+    --tensors-root output/tensors/scene_scaler_ablation_v1/<variant> \
+    --training-root output/training/scene_scaler_ablation_v1/<variant> \
+    --scope <static|all> \
+    --scaler-mode <per_device|global> \
+    --drop-features AgcDb ReceivedSvTimeUncertaintyNanos \
+        PseudorangeRateUncertaintyMetersPerSecond Cn0DbHzL1MinusL5 \
+    --encoder tcn --hidden-dim 32 --dropout 0.1 --epochs 40 --seed 2026
+```
+
+---
+
+## 十、因果在线 C/N0 基线实验（2026-08-04）
+
+### 10.1 目的与实验边界
+
+第九节说明 `per_device` scaler 在当前 recording-CV 中有效，但它依赖“测试时已经拥有该型号设备的训练统计量”，不能直接证明对未见设备的泛化能力。为避免把固定的设备训练均值当作部署先验，本轮实现了两种只依赖当前数据流过去信息的在线基线：
+
+| 路线 | 基线更新规则 | 是否需要设备训练统计量 |
+|---|---|---|
+| `relative_ema` | 每个有效历元都用慢 EMA 更新 | 否 |
+| `relative_gated` | 仅 gate 高置信预测正常时更新 | 否，但需要额外 gate 模型 |
+
+对频段 $b\in\{L1,L5\}$，记当前 band-mean C/N0 为 $k_b(t)$、更新前在线基线为 $x_b(t^-)$。输入残差和更新为：
+
+```text
+d_b(t) = k_b(t) - x_b(t^-)
+alpha  = exp(-ln(2) * delta_t / 60s)
+x_b(t) = alpha * x_b(t^-) + (1 - alpha) * k_b(t)
+```
+
+特征严格先计算、后更新，因此时刻 `t` 的 gate 决策只影响未来时刻。最终每个历元固定为 6 维：
+
+```text
+L1_Cn0Relative, L5_Cn0Relative,
+L1_Cn0AbsRelative, L5_Cn0AbsRelative,
+L1Present, L5Present
+```
+
+这里没有保留绝对 C/N0，只保留带符号残差、绝对残差和频段存在标记。连续四维仍用 outer-train 的 global scaler 标准化；scaler 只在训练集唯一窗口 endpoint 上拟合，避免同一历元因 W5 重叠而被重复计权。
+
+这不是第九节 4 维模型的“只替换 scaler”消融。`per_device/global` 使用 `L1_Cn0DbHz`、`L5_Cn0DbHz`、`L1Present`、`L5Present`，本轮两条路线则以 6 维因果残差替换绝对 C/N0。后续总表比较的是完整可部署路线，不能把差值只归因于 EMA 或 scaler 中的某一个因素。
+
+### 10.2 因果边界和 gated 防泄漏流程
+
+固定实验条件与第九节一致：`mixed_timeblock_outer_cv4_w5_v2` 四折 outer recording holdout、W5、TCN32、dropout 0.1、seed 2026、最多 40 epoch、反频率加权 CE；纯静态用 `--scope static`，静态+动态用 `--scope all`。
+
+在线状态在 recording、原始 source 文件、device、train/val/test split、连续 segment 或超过 2 秒的 receiver gap 处重置。L1/L5 分别初始化和更新，某个频段缺失不会推动另一个频段的基线。这样保证 val/test 不继承 train 状态，也不会通过重叠窗口或后续标签回流；代价是每个新流都存在冷启动。
+
+`relative_gated` 的 gate 也是同规格四分类 TCN32，使用 `relative_ema` 六维输入，并取四分类 softmax 的 `P(normal)`：
+
+```text
+前 W-1=4 个历元：因 gate 尚无完整窗口，允许 warmup 更新
+后续历元：P(normal) >= 0.8 才更新，否则冻结
+```
+
+gate 训练采用 recording-grouped cross-fitting：
+
+1. outer-train 的每条录制只接收未见过该录制的 OOF gate 预测。
+2. outer-val 和 outer-test 的 gate 预测来自只用 outer-train 拟合的 full gate。
+3. `(source_id, device_id, window_time_nanos)` 键、概率范围、split 覆盖率和 source mapping 均写入审计 manifest；四折 gate 与最终分类器 endpoint 覆盖率均为 100%。
+
+因此本轮不存在“gate 先见到同一 outer-test 录制或其标签”的捷径。需要注意，gate 仍是反频率加权的四分类器，其 softmax 分数没有做概率校准；`0.8` 只是预先固定的工作阈值，不代表统计意义上校准后的 80% 正常概率。
+
+### 10.3 四折 outer-test 主结果
+
+| 数据范围 | 路线 | 输入 | Test Macro-F1 | Test Accuracy | Pixel6 L5 recall |
+|---|---|---|---:|---:|---:|
+| 纯静态 | `per_device` | 4 维绝对 C/N0 | **0.991749** | **0.994471** | **0.981419** |
+| 纯静态 | `global` | 4 维绝对 C/N0 | 0.966601 | 0.974200 | 0.076014 |
+| 纯静态 | `relative_ema` | 6 维因果残差 | 0.308087 | 0.356133 | 0.408784 |
+| 纯静态 | `relative_gated` | 6 维 gated 残差 | 0.436958 | 0.445334 | 0.013514 |
+| 静态+动态 | `per_device` | 4 维绝对 C/N0 | **0.925215** | **0.958944** | **0.888554** |
+| 静态+动态 | `global` | 4 维绝对 C/N0 | 0.896820 | 0.937763 | 0.308735 |
+| 静态+动态 | `relative_ema` | 6 维因果残差 | 0.330834 | 0.453929 | 0.259036 |
+| 静态+动态 | `relative_gated` | 6 维 gated 残差 | 0.467123 | 0.503091 | 0.064759 |
+
+`relative_gated` 相比持续 EMA 有明显改善，但仍与 `global` 相差约 0.43 Macro-F1，更远低于 `per_device`。这已经不是调整 dropout、hidden dim 或训练 epoch 能解释的零点零几差距。
+
+gated 的逐类 recall 为：
+
+| 数据范围 | normal | L1 | L5 | L1+L5 |
+|---|---:|---:|---:|---:|
+| 纯静态 | 0.393329 | 0.261776 | 0.522910 | 0.845704 |
+| 静态+动态 | 0.452110 | 0.689621 | 0.514351 | 0.760232 |
+
+它不是简单地“全部预测攻击”：normal recall 只有 0.39/0.45，同时 L1、L5 的 precision 也很低。纯静态的 L1 precision 仅 0.1045、L5 precision 仅 0.2483；mixed 分别为 0.2625、0.1934。六维残差表示没有形成稳定的正常/攻击分界。
+
+Pixel6 L5 仍是关键反例。纯静态同一组 592 个 L5 窗口，`relative_ema` 识别 242 个，gated 仅识别 8 个；mixed 中 Pixel6 的 664 个 L5 窗口，分别识别 172 个和 43 个。门控更新没有解决此前全局标准化暴露出的 Pixel6 L5 问题，反而使其进一步恶化。
+
+### 10.4 Gate 更新审计
+
+| 数据范围 | gate 行数 | `P(normal)>=0.8` | 高置信比例 | 实际允许更新率（含 warmup） | 冻结率 |
+|---|---:|---:|---:|---:|---:|
+| 纯静态 | 110,534 | 9,169 | 8.295% | 5.696% | 94.304% |
+| 静态+动态 | 168,595 | 6,503 | 3.857% | 4.210% | 95.790% |
+
+“高置信比例”以有 gate 预测的 W5 endpoint 为分母；“更新/冻结率”以全部 eligible epoch 为分母，缺 gate 的非 warmup 历元也会冻结，所以两列不能直接相加。
+
+折间差异非常大：static 四折高置信比例依次为 `0.11% / 10.99% / 6.58% / 15.51%`，mixed 为 `0.46% / 1.41% / 1.06% / 12.51%`。这说明反频率加权四分类 softmax 的 `P(normal)` 没有跨折可比的概率含义，固定 `0.8` 门槛导致大部分时间冻结，并且不同折的更新行为完全不同。
+
+### 10.5 CPU 推理开销
+
+同第九节测时环境：CPU 单线程、预热 200 次、batch=1 测 1,000 次、batch=256 测 100 次。表中为四折中位数：
+
+| 数据范围 | 路线 | batch=1 p50 | batch=1 p95 | batch=256 p50 | 总参数量 |
+|---|---|---:|---:|---:|---:|
+| 纯静态 | `relative_ema` | 0.1576 ms | 0.1952 ms | 0.4991 ms | 4,964 |
+| 纯静态 | `relative_gated` | 0.3158 ms | 0.4885 ms | 1.0237 ms | 9,928 |
+| 静态+动态 | `relative_ema` | 0.1571 ms | 0.1970 ms | 0.5032 ms | 4,964 |
+| 静态+动态 | `relative_gated` | 0.3177 ms | 0.4910 ms | 1.0264 ms | 9,928 |
+
+gated 数据是 gate+classifier 两次顺序前向的实测，不是单模型耗时乘二的估算。它仍不含日志解析、band mean 聚合、global scaler 和 EMA 标量更新。两次小 TCN 前向在桌面 CPU 上仍低于 0.5 ms p95，但当前精度不足，因此低延迟不能构成采用理由。
+
+### 10.6 失败原因与工程结论
+
+本轮结果支持以下判断：
+
+1. **持续 EMA 会吸收持续攻击。** 一旦异常持续时间接近或超过 60 秒半衰期，攻击后的 C/N0 会逐渐成为新基线，残差随之消失。
+2. **gated 缓解漂移，但 gate 本身不可靠。** class-weighted 四分类 softmax 未校准，固定阈值折间极不稳定；错误冻结和错误更新又会递归改变后续输入。
+3. **没有可信冷启动。** 每个 split/segment 的首个观测直接初始化基线；若新流从攻击区间开始，初值本身就是受污染的。这个在线初值不等价于老师所说的“已采集正常开阔环境基线”。
+4. **表示丢失了绝对信息。** 只有相对值和绝对残差，无法保留设备当前 C/N0 绝对水平、L1/L5 绝对关系以及老师建议的多维正常偏差。gated 无法恢复构造特征时已经丢掉的信息。
+5. **频繁重置是必要约束，也是现实代价。** source/split/segment/gap 重置避免状态泄漏，却使离线结果诚实地暴露出部署时每次启动都需要校准的问题。
+
+因此，`causal_relative_v1` 应记录为**已完整验证的负结果**，不进入当前场景分支主线。继续盲调 TCN 宽度、dropout、EMA 半衰期或 `0.8` 阈值不值得；当前差距首先是基线可辨识性、概率校准和输入信息量问题。
+
+当前工程选择仍是：已知设备、允许预先校准时保留 `per_device`；若研究目标明确要求未见设备部署，则必须单独建立 leave-one-device-out 评估，不能用 recording-CV 的 0.99/0.93 结果代替。
+
+下一轮更有信息量的路线按优先级为：
+
+1. 明确部署协议，给每台新设备一段**确认正常的开阔场景校准期**；从该段拟合 C/N0、AGC 等多维正常基线，再做跨设备 held-out 测试。
+2. 保留 global 标准化下的绝对 C/N0，同时追加相对残差，做 `absolute + relative` 混合输入消融，验证本轮失败是否主要来自绝对信息丢失。
+3. 只有在必须无校准在线启动时，才继续 gated：先训练独立的 `normal vs attack` 二分类 gate，在 outer-train OOF 预测上做概率/阈值校准，再加入滞回、最短正常持续时间和单步更新限幅。所有阈值仍只能由 outer-train/val 决定。
+
+### 10.7 产物与复现入口
+
+```text
+output/tensors/causal_relative_v1/
+  static_ema/ mixed_ema/ static_gated/ mixed_gated/
+
+output/training/causal_relative_v1/
+  <四个变体>/fold_1..4/
+  <四个变体>/aggregate_test_metrics.json
+  <四个变体>/aggregate_test_predictions.csv
+  <四个变体>/prediction_summary/
+
+output/causal_gate_crossfit/
+  static_gated/ mixed_gated/
+```
+
+相关入口：
+
+- [45_build_band_mean_window_tensors.py](../pipeline_total/45_build_band_mean_window_tensors.py)：构造 EMA/gated 因果特征与唯一 endpoint scaler。
+- [46_train_band_mean_multiclass.py](../pipeline_total/46_train_band_mean_multiclass.py)：训练、按 split 导出预测并校验 checkpoint 元数据。
+- [47_aggregate_band_mean_cv.py](../pipeline_total/47_aggregate_band_mean_cv.py)：四折聚合与因果参数透传。
+- [56_measure_band_mean_runtime.py](../pipeline_total/56_measure_band_mean_runtime.py)：单模型或 gate+classifier 双模型 CPU 测时。
+- [57_run_causal_gated_cv.py](../pipeline_total/57_run_causal_gated_cv.py)：防泄漏 OOF gate 编排和审计 manifest。
+- [58_summarize_band_mean_predictions.py](../pipeline_total/58_summarize_band_mean_predictions.py)：overall、逐类、逐设备、逐录制汇总。
+- [test_causal_band_mean_features.py](../tests/test_causal_band_mean_features.py)：因果性、重置、缺频段、gate 键和 scaler 范围测试。
+- [test_band_mean_pipeline_contracts.py](../tests/test_band_mean_pipeline_contracts.py)：checkpoint/tensor 绑定、fold/endpoint 唯一性和录制覆盖完整性测试。
+
+---
+
+## 十一、绝对 C/N0 + 模型自更新在线基线（2026-08-05）
+
+### 11.1 这次实现的协议
+
+第十节的 `relative_ema/gated` 是“仅保留残差”的负向消融，不能回答“保留当前绝对 C/N0、再把在线基线作为额外输入”这一设想。本节单独实现该设想，输入固定为：
+
+```text
+[L1_Cn0DbHz(t), L5_Cn0DbHz(t), L1Present(t), L5Present(t),
+ x_L1(t-),   x_L5(t-)]
+```
+
+其中前四维是原有的绝对观测，后两维是当前时刻推理前可用的在线基线。对每个频段的有效观测 `k_b(t)`，状态机严格按下列顺序执行：
+
+```text
+features(t) 使用 x_b(t-)
+pred(t) = argmax(classifier(W5 ending at t))
+若 pred(t) == normal (class 0):
+    x_b(t) = 0.98 * x_b(t-) + 0.02 * k_b(t)   # 仅更新当前存在的频段
+否则:
+    x_b(t) = x_b(t-)
+```
+
+因此当前预测只会影响未来输入。训练、验证和测试均使用模型自身此前的离散预测更新状态；标签只进入当前端点的交叉熵和最终指标，绝不参与更新。没有外部 gate、置信度阈值或 teacher forcing。
+
+所有端点（含单频端点）均进行前向推理，单频端点只从四分类损失、指标和预测 CSV 中排除；若其被预测为正常，只更新其实际存在的频段。这保证“模型预测正常才更新”的规则没有在缺频段处被悄悄改写。状态会在 recording、source、train/val/test split、manifest segment 和超过 2 秒的 receiver gap 处重置；每个新流以该流首个可用频段 C/N0 冷启动。
+
+为避免重新引入设备泄漏，连续特征仍仅由 outer-train 拟合一套 `global` mean/std，未使用该设备的训练均值或标准差。在线基线在标准化空间中更新，与先在原始 C/N0 空间 EMA 再应用同一线性 global scaler 等价。
+
+模型保持 W5、TCN32、dropout 0.1、4,964 参数。先训练四维绝对 C/N0 TCN，再把其输入投影扩展为六维，新增两列权重初始化为 0。这个 warm start 的“epoch 0”与四维模型完全等价，故也纳入 validation checkpoint 选择；若后续在线微调没有改善验证集，就保留 epoch 0，而不是人为接受退化。
+
+### 11.2 四折 outer-test 结果
+
+协议仍为 `mixed_timeblock_outer_cv4_w5_v2`、四折 recording holdout、seed 2026。四分类指标只统计双频端点，故与第九、十节的主表口径一致。
+
+| 数据范围 | 路线 | Test Macro-F1 | Test Accuracy | 相对 4 维 global 的 Macro-F1 变化 |
+|---|---|---:|---:|---:|
+| 纯静态 | 4 维绝对 C/N0 / `global` | 0.966601 | 0.974200 | - |
+| 纯静态 | 绝对 C/N0 + 在线 `x_L1/x_L5` | 0.966254 | 0.974058 | -0.000347 |
+| 静态+动态 | 4 维绝对 C/N0 / `global` | 0.896820 | 0.937763 | - |
+| 静态+动态 | 绝对 C/N0 + 在线 `x_L1/x_L5` | 0.894044 | 0.936458 | -0.002776 |
+
+纯静态基本持平，mixed 下降约 0.28 个百分点，均没有出现可称为质变的提升。mixed 的逐类 F1 为 normal `0.9611`、L1 `0.8096`、L5 `0.8710`、L1+L5 `0.9345`；相对四维 global 的对应值均略低或近似持平。
+
+这说明两件事：
+
+1. 这条路线避免了第十节残差-only 表征丢弃绝对信息造成的崩溃，且在已知设备 recording-CV 下稳定可运行。
+2. 在当前数据、固定 `alpha=0.98` 和当前 TCN 容量下，模型没有学到能稳定利用这两条在线基线通道的额外判别信息。静态四折的选择轮次为 `0/1/0/0`，mixed 为 `0/1/0/4`；多个 outer fold 的最优 checkpoint 正是 epoch 0 warm start，说明微调常常没有带来有效增益。
+
+因此本结果应作为“直接实现后未发现收益”的严谨消融，而不是把它与 `relative_ema/gated` 的失败混为一谈。它也不能证明所有在线基线都无效：可信正常冷启动、不同的更新动力学、绝对值与显式差值的联合输入，以及 leave-one-device-out 协议仍是独立问题；但在这些条件改变前，不应把它当作当前场景分支的主模型替换方案。
+
+### 11.3 完整在线推理开销
+
+新增测时器把基线特征构造、TCN 前向、`argmax` 和条件状态更新作为一个完整端点决策计时；不包括文件读取、原始日志解析、band-mean 聚合、global scaler、指标和 CSV 写出。CPU 单线程、每折预热 100 次，以下为四折中位数，单位均为毫秒/端点：
+
+| 数据范围 | 单流完整循环平均 | 单流 p50 | 四折中最大 p95 |
+|---|---:|---:|---:|
+| 纯静态 | 0.2325 | 0.2143 | 0.3497 |
+| 静态+动态 | 0.2548 | 0.2194 | 0.4534 |
+
+跨 stream 的 round-robin batch=256 补充测量中，static fold 1 为 `11,864 endpoint/s`（`0.0843 ms/endpoint`），mixed fold 1 为 `15,304 endpoint/s`（`0.0653 ms/endpoint`）。这两个吞吐数受各折 stream 长度和组成影响，只用于说明批处理能力，不能当作单设备实时延迟。
+
+对 static fold 1 和 mixed fold 1，单流与 batch rollout 导出的可评分端点预测 checksum 完全一致，确认计时器没有改变状态更新语义。
+
+### 11.4 产物与复现入口
+
+```text
+output/tensors/online_cn0_baseline_v2/
+  static_global_alpha0p9800/fold_1..4/
+  mixed_global_alpha0p9800/fold_1..4/
+
+output/training/online_cn0_baseline_v2/
+  <scope>_global_alpha0p9800_absolute_warm_start/fold_1..4/
+  <scope>_global_alpha0p9800/fold_1..4/
+    best_online_cn0_baseline_tcn.pt
+    val_metrics_online_cn0_baseline_tcn.json
+    test_predictions_band_mean_window_tcn.csv
+    runtime_online_rollout_single.json
+  <scope>_global_alpha0p9800/
+    aggregate_test_metrics.json
+    aggregate_test_predictions.csv
+```
+
+主入口：
+
+- [59_train_online_cn0_baseline.py](../pipeline_total/59_train_online_cn0_baseline.py)：严格时序 rollout、epoch-0 warm-start 选择、checkpoint/tensor 合约检查。
+- [60_run_online_cn0_baseline_cv.py](../pipeline_total/60_run_online_cn0_baseline_cv.py)：每折构建 global 绝对张量、四维 warm start、在线训练/测试和四折聚合编排。
+- [61_measure_online_cn0_rollout_runtime.py](../pipeline_total/61_measure_online_cn0_rollout_runtime.py)：包含状态机的真实在线 CPU 测时。
+- [test_online_cn0_baseline_rollout.py](../tests/test_online_cn0_baseline_rollout.py)：预测只影响未来、异常冻结、标签隔离、单频更新、segment 重置和 rollout 策略测试。
+
+例如，完整静态或 mixed 复现可运行：
+
+```bash
+python pipeline_total/60_run_online_cn0_baseline_cv.py --scope static
+python pipeline_total/60_run_online_cn0_baseline_cv.py --scope all
+```
+
+并行折运行时加入 `--folds <N> --no-aggregate`，待四个 fold 完成后再执行：
+
+```bash
+python pipeline_total/47_aggregate_band_mean_cv.py \
+  --protocol-dir output/protocols/mixed_timeblock_outer_cv4_w5_v2 \
+  --training-root output/training/online_cn0_baseline_v2/<scope>_global_alpha0p9800 \
+  --encoder tcn --aggregate-only --folds 1 2 3 4
+```
