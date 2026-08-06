@@ -13,7 +13,8 @@
 - 已完成静态六折完整诊断链：四维 C/N0-only + TCN 场景分支（pooled Macro-F1=0.9921，Accuracy=0.9944），结合 44 维 C/N0 设备响应 backbone、Watch L1 压制异常专家和 L5 自校准 direct 证据。完整系统 pooled Macro-F1=0.9802、FAR=0.863%、abnormal recall=99.05%、anomaly recall=98.76%、direct recall=98.98%。
 - 该方案针对并缓解了 L5 场景下 Watch 无 L5 观测但 L1 受压制的关联异常漏检，以及 Pixel6 等异构设备的 L5 direct 响应迁移失配；Watch 的 L1 压制输出为 `anomaly`，而不错误标为 L5 `direct`。
 - 方案优化阶段 3 已完成：场景分支经过 S1–S5 六折特征消融后，确定四维 C/N0-only + TCN 为当前正式候选，pooled Macro-F1=0.9921、Accuracy=0.9944。
-- 当前结果仍是静态协议下的开发性六折结果。动态泛化、TTD（检测时延）、端到端模型大小/推理耗时，以及更严格的独立盲测仍是下一阶段工作。
+- 当前结果仍以静态六折完整诊断为候选。2026-08-06 的 mixed 四折动态场景扩展显示：四维 C/N0 场景模型在纯动态子集仅为 Macro-F1=0.5412（L5 recall=25.89%，L1+L5 recall=10.99%）；加入因果 C/N0 斜率、波动和有效观测数后升至 0.5819（34.23%、23.63%），但仍不能作为动态场景门控或端到端动态诊断结果。
+- 动态设备响应的 `normal/anomaly/direct` 真值尚未完成审查；TTD（检测时延）、端到端模型大小/推理耗时，以及更严格的独立盲测仍是下一阶段工作。
 
 请依次阅读：[当前交接状态](docs/handoff_status.md)、[Fold 6 诊断快照](docs/static_signal_fold6_diagnostics_20260727.md)、[数据清单](docs/data_inventory.md) 和 [脚本索引](pipeline_total/README.md)。
 

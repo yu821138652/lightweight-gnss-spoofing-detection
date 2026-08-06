@@ -178,6 +178,7 @@ def build_and_train_fold(
     encoder: str,
     hidden_dim: int,
     dropout: float,
+    time_steps: int,
     epochs: int,
     seed: int,
     skip_existing: bool,
@@ -216,6 +217,7 @@ def build_and_train_fold(
         "--outer-manifest", str(outer_manifest),
         "--config", str(config_path),
         "--output-dir", str(tensor_dir),
+        "--time-steps", str(time_steps),
         "--scope", scope,
         "--scaler-mode", scaler_mode,
         "--causal-baseline-mode", causal_baseline_mode,
@@ -262,6 +264,7 @@ def build_and_train_fold(
             "builder_script": file_fingerprint(builder_script),
         },
         "scope": scope,
+        "time_steps": int(time_steps),
         "scaler_mode": scaler_mode,
         "include_pseudorange_rate": include_pseudorange_rate,
         "include_state_adr": include_state_adr,
@@ -441,6 +444,10 @@ def parse_args() -> argparse.Namespace:
                         help="Hidden/channel dimension passed to the trainer.")
     parser.add_argument("--dropout", type=float, default=0.1,
                         help="Dropout passed to the trainer (must be in [0, 1)).")
+    parser.add_argument(
+        "--time-steps", type=int, default=5,
+        help="Causal temporal context length passed to the tensor builder.",
+    )
     parser.add_argument("--epochs", type=int, default=40)
     parser.add_argument("--seed", type=int, default=2026)
     parser.add_argument("--folds", type=int, nargs="*", default=None, help="Subset of fold ids; default all.")
@@ -524,6 +531,8 @@ def parse_args() -> argparse.Namespace:
     args = parser.parse_args()
     if args.hidden_dim <= 0:
         parser.error("--hidden-dim must be positive")
+    if args.time_steps < 2:
+        parser.error("--time-steps must be at least 2")
     if not 0.0 <= args.dropout < 1.0:
         parser.error("--dropout must be in [0, 1)")
     if args.causal_half_life_seconds <= 0:
@@ -552,8 +561,8 @@ def main() -> None:
         raise ValueError(
             f"Requested folds are absent from {args.protocol_dir}: {invalid}"
         )
-    LOG.info("folds=%s encoder=%s hidden_dim=%d dropout=%.3f",
-             folds, args.encoder, args.hidden_dim, args.dropout)
+    LOG.info("folds=%s encoder=%s hidden_dim=%d time_steps=%d dropout=%.3f",
+             folds, args.encoder, args.hidden_dim, args.time_steps, args.dropout)
 
     prediction_paths: list[Path] = []
     for fold in folds:
@@ -566,7 +575,7 @@ def main() -> None:
         prediction_paths.append(
             build_and_train_fold(
                 fold, args.protocol_dir, args.tensors_root, args.training_root,
-                args.csv, args.config, args.encoder, args.hidden_dim, args.dropout,
+                args.csv, args.config, args.encoder, args.hidden_dim, args.dropout, args.time_steps,
                 args.epochs, args.seed,
                 args.skip_existing, args.class_weight_mult, args.drop_features,
                 args.scope, args.scaler_mode,
