@@ -27,8 +27,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model", choices=("linear", "mlp"), default="linear")
     parser.add_argument("--label-key", choices=("y_event", "y_response_state"), default="y_event")
     parser.add_argument(
-        "--label-transform", choices=("raw", "abnormal", "response_type", "direct"), default="raw",
-        help="raw keeps the selected label; abnormal maps response states 1/2 to one; response_type keeps states 1/2 and maps anomaly/direct to 0/1; direct maps state 2 to one",
+        "--label-transform", choices=("raw", "abnormal", "anomaly_only", "response_type", "direct"), default="raw",
+        help="raw keeps the selected label; abnormal maps response states 1/2 to one; anomaly_only maps anomaly to one and excludes direct rows; response_type keeps states 1/2 and maps anomaly/direct to 0/1; direct maps state 2 to one",
     )
     parser.add_argument("--num-classes", type=int, default=0, help="override class count; inferred from train/val when omitted")
     parser.add_argument("--hidden-dim", type=int, default=16)
@@ -41,6 +41,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=2026)
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--include-devices", nargs="+", help="restrict training/evaluation to named receiver devices")
+    parser.add_argument(
+        "--include-scenarios", nargs="+",
+        help="restrict training/evaluation to named recording scenarios (for example st_L5)",
+    )
     parser.add_argument("--checkpoint", type=Path)
     parser.add_argument("--test-only", action="store_true")
     parser.add_argument("--calibrate-only", action="store_true", help="select an alarm threshold on val.npz using an existing checkpoint")
@@ -76,7 +80,14 @@ def seed_all(seed: int) -> None:
 class EventDataset(Dataset):
     REQUIRED = {"x", "device_id", "recording_id", "source_id", "endpoint_tow"}
 
-    def __init__(self, path: Path, label_key: str, include_device_ids: set[int] | None = None, label_transform: str = "raw") -> None:
+    def __init__(
+        self,
+        path: Path,
+        label_key: str,
+        include_device_ids: set[int] | None = None,
+        label_transform: str = "raw",
+        include_recording_ids: set[int] | None = None,
+    ) -> None:
         with np.load(path, allow_pickle=False) as data:
             if missing := self.REQUIRED.union({label_key}).difference(data.files):
                 raise ValueError(f"{path} is missing {sorted(missing)}")
@@ -88,6 +99,11 @@ class EventDataset(Dataset):
             self.endpoint_tow = torch.from_numpy(data["endpoint_tow"].astype(np.float64))
         if label_transform == "abnormal":
             labels = (labels > 0).astype(np.int64)
+        elif label_transform == "anomaly_only":
+            # A single-frequency receiver should learn its indirect response
+            # separately from direct spoof labels.  Direct rows are not
+            # negatives for this task and are removed below via the -1 mask.
+            labels = np.where(labels == 2, -1, (labels == 1).astype(np.int64))
         elif label_transform == "response_type":
             labels = np.where(labels > 0, labels - 1, -1).astype(np.int64)
         elif label_transform == "direct":
@@ -95,10 +111,19 @@ class EventDataset(Dataset):
         elif label_transform != "raw":
             raise ValueError(f"Unsupported label transform: {label_transform}")
         self.y = torch.from_numpy(labels)
+        if include_device_ids is not None or include_recording_ids is not None:
+            selected = torch.ones(len(self.device_id), dtype=torch.bool)
         if include_device_ids is not None:
-            selected = torch.zeros(len(self.device_id), dtype=torch.bool)
+            device_selected = torch.zeros(len(self.device_id), dtype=torch.bool)
             for device_id in include_device_ids:
-                selected |= self.device_id == device_id
+                device_selected |= self.device_id == device_id
+            selected &= device_selected
+        if include_recording_ids is not None:
+            recording_selected = torch.zeros(len(self.recording_id), dtype=torch.bool)
+            for recording_id in include_recording_ids:
+                recording_selected |= self.recording_id == recording_id
+            selected &= recording_selected
+        if include_device_ids is not None or include_recording_ids is not None:
             self.x = self.x[selected]
             self.y = self.y[selected]
             self.device_id = self.device_id[selected]
@@ -287,8 +312,16 @@ def load_checkpoint_model(checkpoint_path: Path, device: torch.device, input_dim
     return checkpoint, model
 
 
-def calibrate_checkpoint(args: argparse.Namespace, device_names: dict[int, str], device: torch.device, include_device_ids: set[int] | None) -> None:
-    val = EventDataset(args.data_dir / "val.npz", args.label_key, include_device_ids, args.label_transform)
+def calibrate_checkpoint(
+    args: argparse.Namespace,
+    device_names: dict[int, str],
+    device: torch.device,
+    include_device_ids: set[int] | None,
+    include_recording_ids: set[int] | None,
+) -> None:
+    val = EventDataset(
+        args.data_dir / "val.npz", args.label_key, include_device_ids, args.label_transform, include_recording_ids,
+    )
     checkpoint, model = load_checkpoint_model(args.checkpoint, device, val.x.shape[1])
     if int(checkpoint.get("num_classes", 2)) != 2:
         raise ValueError("--calibrate-only currently applies only to binary checkpoints")
@@ -332,9 +365,24 @@ def main() -> None:
         if unknown:
             raise ValueError(f"Unknown device names: {unknown}; available={sorted(named_device_ids)}")
         include_device_ids = {named_device_ids[name] for name in args.include_devices}
+    include_recording_ids: set[int] | None = None
+    if args.include_scenarios:
+        recordings = metadata.get("recordings", [])
+        if not isinstance(recordings, list):
+            raise ValueError("metadata has no recording list")
+        available_scenarios = {str(row.get("Scenario", "")) for row in recordings if isinstance(row, dict)}
+        unknown_scenarios = sorted(set(args.include_scenarios).difference(available_scenarios))
+        if unknown_scenarios:
+            raise ValueError(f"Unknown scenarios: {unknown_scenarios}; available={sorted(available_scenarios)}")
+        include_recording_ids = {
+            recording_id for recording_id, row in enumerate(recordings)
+            if isinstance(row, dict) and str(row.get("Scenario", "")) in args.include_scenarios
+        }
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if args.test_only:
-        test = EventDataset(args.data_dir / "test.npz", args.label_key, include_device_ids, args.label_transform)
+        test = EventDataset(
+            args.data_dir / "test.npz", args.label_key, include_device_ids, args.label_transform, include_recording_ids,
+        )
         checkpoint, model = load_checkpoint_model(args.checkpoint, device, test.x.shape[1])
         args.output_dir.mkdir(parents=True, exist_ok=True)
         num_classes = int(checkpoint.get("num_classes", 2))
@@ -342,11 +390,15 @@ def main() -> None:
         save_json(args.output_dir / "test_metrics_device_event.json", evaluate_probability(test, probabilities(model, test, device, args.batch_size), threshold, device_names, num_classes, metadata))
         return
     if args.calibrate_only:
-        calibrate_checkpoint(args, device_names, device, include_device_ids)
+        calibrate_checkpoint(args, device_names, device, include_device_ids, include_recording_ids)
         return
 
-    train = EventDataset(args.data_dir / "train.npz", args.label_key, include_device_ids, args.label_transform)
-    val = EventDataset(args.data_dir / "val.npz", args.label_key, include_device_ids, args.label_transform)
+    train = EventDataset(
+        args.data_dir / "train.npz", args.label_key, include_device_ids, args.label_transform, include_recording_ids,
+    )
+    val = EventDataset(
+        args.data_dir / "val.npz", args.label_key, include_device_ids, args.label_transform, include_recording_ids,
+    )
     if len(val) == 0:
         raise ValueError("Validation is empty; use a tensor directory with an inner validation split")
     num_classes = infer_num_classes(train, val, requested=args.num_classes)
@@ -389,7 +441,8 @@ def main() -> None:
         "best_val_macro_f1": best_score, "state_dict": best_state, "task": "device_attack_event",
         "label_key": args.label_key, "num_classes": num_classes,
         "label_transform": args.label_transform,
-        "label_semantics": metadata.get("label_semantics"), "included_device_names": args.include_devices,
+        "label_semantics": metadata.get("label_semantics"),
+        "included_device_names": args.include_devices, "included_scenarios": args.include_scenarios,
     }, checkpoint_path)
     save_json(args.output_dir / "training_history.json", history)
     model.load_state_dict(best_state)

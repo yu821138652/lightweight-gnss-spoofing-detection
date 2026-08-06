@@ -50,6 +50,7 @@ def parse_args() -> argparse.Namespace:
             "initial_baseline_delta_with_device", "initial_baseline_delta_l1_with_device",
             "initial_baseline_delta_no_cross", "initial_baseline_delta_cn0_compact",
             "initial_baseline_delta_cn0_extreme",
+            "initial_baseline_delta_l1_cn0_extreme",
             "initial_baseline_delta_with_capability", "initial_baseline_delta_no_cross_with_capability",
         ), default="all",
     )
@@ -60,6 +61,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--initial-baseline-windows", type=int, default=0,
         help="append differences from the initial reviewed-normal device windows in each source stream",
+    )
+    parser.add_argument(
+        "--initial-baseline-offset-windows", type=int, default=0,
+        help="skip this many initial device windows before forming the fixed baseline (for receiver warm-up)",
     )
     parser.add_argument(
         "--initial-baseline-policy", choices=("error", "exclude_stream"), default="error",
@@ -316,6 +321,28 @@ def select_feature_indices(names: list[str], feature_set: str) -> list[int]:
                 if name.startswith(prefix) and name[len(prefix):] in extreme_suffixes:
                     selected.append(name)
                     break
+    elif feature_set == "initial_baseline_delta_l1_cn0_extreme":
+        # Compact suppression signature for single-frequency receivers.  These
+        # are all changes relative to the reviewed pre-attack baseline; raw
+        # C/N0 levels and unavailable L5 fields are intentionally excluded.
+        extreme_suffixes = {
+            "log_signal_count",
+            "cn0_last_median",
+            "cn0_last_q25",
+            "cn0_last_q75",
+            "cn0_last_top3_mean",
+            "cn0_last_bottom3_mean",
+            "cn0_slope_median",
+            "cn0_slope_positive_ratio",
+            "cn0_slope_negative_ratio",
+            "cn0_slope_top3_mean",
+            "cn0_slope_bottom3_mean",
+        }
+        prefix = "initial_baseline_delta_l1_"
+        selected = [
+            name for name in names
+            if name.startswith(prefix) and name[len(prefix):] in extreme_suffixes
+        ]
     elif feature_set == "initial_baseline_delta_with_capability":
         selected = [
             name for name in names
@@ -422,14 +449,15 @@ def append_causal_device_deltas(
 
 
 def append_initial_baseline_deltas(
-    data: dict[str, np.ndarray], names: list[str], baseline_windows: int,
+    data: dict[str, np.ndarray], names: list[str], baseline_windows: int, baseline_offset_windows: int,
 ) -> list[str]:
-    """Append source-local differences from a verified normal session prefix.
+    """Append source-local differences from a verified normal post-warm-up baseline.
 
     A rolling reference eventually adapts to a sustained attack.  This feature
-    keeps the reference fixed at the session prefix, which is valid only when
-    that prefix is independently reviewed as normal.  The labels are used
-    exclusively for this data-contract check, never to calculate the values.
+    keeps the reference fixed after an optional receiver warm-up offset, which
+    is valid only when that reference window is independently reviewed as
+    normal.  Labels are used exclusively for this data-contract check, never
+    to calculate the values.
     """
     if baseline_windows == 0:
         return names
@@ -443,18 +471,18 @@ def append_initial_baseline_deltas(
     for recording_id, source_id in groups:
         group = np.flatnonzero((recording_ids == recording_id) & (source_ids == source_id))
         ordered = group[np.argsort(endpoint_times[group], kind="mergesort")]
-        prefix = ordered[:baseline_windows]
-        if len(prefix) < baseline_windows:
+        baseline = ordered[baseline_offset_windows:baseline_offset_windows + baseline_windows]
+        if len(baseline) < baseline_windows:
             raise ValueError(
-                f"Source {(int(recording_id), int(source_id))} has only {len(prefix)} windows; "
-                f"cannot construct a {baseline_windows}-window initial baseline"
+                f"Source {(int(recording_id), int(source_id))} has only {len(ordered)} windows; "
+                f"cannot construct a baseline after offset {baseline_offset_windows} with {baseline_windows} windows"
             )
-        if np.any(event_labels[prefix] != 0):
+        if np.any(event_labels[baseline] != 0):
             raise ValueError(
-                f"Initial baseline overlaps a reviewed attack for source {(int(recording_id), int(source_id))}; "
-                "choose fewer baseline windows or a different protocol"
+                f"Post-warm-up baseline overlaps a reviewed attack for source {(int(recording_id), int(source_id))}; "
+                "choose a smaller offset or a different protocol"
             )
-        reference_values = values[prefix]
+        reference_values = values[baseline]
         finite = np.isfinite(reference_values)
         count = finite.sum(axis=0)
         reference = np.divide(
@@ -466,8 +494,10 @@ def append_initial_baseline_deltas(
     return [*names, *[f"initial_baseline_delta_{name}" for name in names]]
 
 
-def initial_baseline_eligibility(data: dict[str, np.ndarray], baseline_windows: int) -> tuple[np.ndarray, list[dict[str, int | str]]]:
-    """Identify streams that can establish a reviewed-normal initial baseline."""
+def initial_baseline_eligibility(
+    data: dict[str, np.ndarray], baseline_windows: int, baseline_offset_windows: int,
+) -> tuple[np.ndarray, list[dict[str, int | str]]]:
+    """Identify streams that can establish a reviewed-normal post-warm-up baseline."""
     keep = np.ones(len(data["x"]), dtype=bool)
     excluded: list[dict[str, int | str]] = []
     recording_ids = data["recording_id"]
@@ -478,16 +508,17 @@ def initial_baseline_eligibility(data: dict[str, np.ndarray], baseline_windows: 
     for recording_id, source_id in groups:
         group = np.flatnonzero((recording_ids == recording_id) & (source_ids == source_id))
         ordered = group[np.argsort(endpoint_times[group], kind="mergesort")]
-        prefix = ordered[:baseline_windows]
+        baseline = ordered[baseline_offset_windows:baseline_offset_windows + baseline_windows]
         reason: str | None = None
-        if len(prefix) < baseline_windows:
+        if len(baseline) < baseline_windows:
             reason = "insufficient_windows"
-        elif np.any(event_labels[prefix] != 0):
-            reason = "attack_in_initial_baseline"
+        elif np.any(event_labels[baseline] != 0):
+            reason = "attack_in_post_warmup_baseline"
         if reason is not None:
             keep[group] = False
             excluded.append({
-                "recording_id": int(recording_id), "source_id": int(source_id), "windows": int(len(group)), "reason": reason,
+                "recording_id": int(recording_id), "source_id": int(source_id), "windows": int(len(group)),
+                "baseline_offset_windows": int(baseline_offset_windows), "reason": reason,
             })
     return keep, excluded
 
@@ -567,7 +598,9 @@ def main() -> None:
     args = parse_args()
     if args.causal_reference_windows < 0 or args.initial_baseline_windows < 0:
         raise ValueError("reference window counts must be non-negative")
-    if args.feature_set in ("initial_baseline_delta_only", "initial_baseline_delta_with_device", "initial_baseline_delta_l1_with_device", "initial_baseline_delta_no_cross", "initial_baseline_delta_cn0_compact", "initial_baseline_delta_cn0_extreme", "initial_baseline_delta_with_capability", "initial_baseline_delta_no_cross_with_capability") and args.initial_baseline_windows == 0:
+    if args.initial_baseline_offset_windows < 0:
+        raise ValueError("--initial-baseline-offset-windows must be non-negative")
+    if args.feature_set in ("initial_baseline_delta_only", "initial_baseline_delta_with_device", "initial_baseline_delta_l1_with_device", "initial_baseline_delta_no_cross", "initial_baseline_delta_cn0_compact", "initial_baseline_delta_cn0_extreme", "initial_baseline_delta_l1_cn0_extreme", "initial_baseline_delta_with_capability", "initial_baseline_delta_no_cross_with_capability") and args.initial_baseline_windows == 0:
         raise ValueError("initial baseline feature sets require --initial-baseline-windows")
     if args.output_dir.exists() and any(args.output_dir.iterdir()) and not args.overwrite:
         raise FileExistsError(f"Output directory is not empty: {args.output_dir}")
@@ -608,7 +641,9 @@ def main() -> None:
     initial_baseline_exclusions: dict[str, list[dict[str, int | str]]] = {split: [] for split in SPLITS}
     if args.initial_baseline_windows:
         for split, data in datasets.items():
-            keep, excluded = initial_baseline_eligibility(data, args.initial_baseline_windows)
+            keep, excluded = initial_baseline_eligibility(
+                data, args.initial_baseline_windows, args.initial_baseline_offset_windows,
+            )
             initial_baseline_exclusions[split] = excluded
             if excluded and args.initial_baseline_policy == "error":
                 first = excluded[0]
@@ -621,7 +656,9 @@ def main() -> None:
                 filter_rows(data, keep)
     baseline_names: list[str] | None = None
     for data in datasets.values():
-        candidate_names = append_initial_baseline_deltas(data, feature_names, args.initial_baseline_windows)
+        candidate_names = append_initial_baseline_deltas(
+            data, feature_names, args.initial_baseline_windows, args.initial_baseline_offset_windows,
+        )
         if baseline_names is None:
             baseline_names = candidate_names
         elif baseline_names != candidate_names:
@@ -662,6 +699,7 @@ def main() -> None:
         "device_aggregate_profile": args.device_aggregate_profile,
         "causal_reference_windows": args.causal_reference_windows,
         "initial_baseline_windows": args.initial_baseline_windows,
+        "initial_baseline_offset_windows": args.initial_baseline_offset_windows,
         "initial_baseline_policy": args.initial_baseline_policy,
         "initial_baseline_exclusions": initial_baseline_exclusions,
         "capability_masks_source": "train_windows_only" if capability_metadata else None,

@@ -1,6 +1,6 @@
 ﻿# pipeline_total 脚本索引
 
-当前状态以 `docs/handoff_status.md` 为准。01–10 是既有数据与基础实验链；11–18 是 P0–P5 历史设备级探索；19–35 包含静态逐 signal 主链及其诊断分支；38–40 是当前统一静态+动态逐 signal 4-fold 基线。22 是当前推荐的 Session 级标签审查工具，36–37 还保留设备事件和动态增广的独立探索入口。
+当前最终候选与完整静态六折结果见 `docs/complete_scene_response_diagnosis_20260806.md`。01–10 是既有数据与基础实验链；11–18 是 P0–P5 历史设备级探索；19–35 包含静态逐 signal 主链及其诊断分支；38–40 是统一静态+动态逐 signal 4-fold 基线；51–58 是场景门控设备响应联合诊断链。22 是当前推荐的 Session 级标签审查工具。
 
 ## 01–10：既有数据与诊断链
 
@@ -663,6 +663,23 @@ python pipeline_total/35_refit_static_l5_device_heads.py `
   --seed 2026 `
   --num-workers 0
 ```
+
+## 36–37、51–58：场景门控的设备响应联合诊断
+
+这是当前静态数据的最终候选部署链，完整方法、六折结果与适用边界见 `docs/complete_scene_response_diagnosis_20260806.md`。该链将“攻击场景”与“设备响应”分开：场景分支输出 `normal/L1/L5/L1+L5`，设备侧输出 `normal/anomaly/direct`。
+
+| 脚本 | 作用 |
+|---:|---|
+| 36 | `36_build_device_attack_event_tensors.py`：构建设备响应张量；支持初始基线偏移和 Watch L1 特征集 |
+| 37 | `37_train_device_attack_event.py`：训练线性/MLP 响应模型；支持 `anomaly_only` 标签变换与场景筛选 |
+| 51–53 | 场景条件响应的早期探索和对照，不属于当前最终链 |
+| 54 | `54_eval_scene_gated_watch_anomaly.py`：将 Watch 压制异常专家以全局 L5 场景门控 |
+| 55 | `55_run_scene_gated_watch_anomaly_cv.py`：Watch 专家六折构建、训练、校准、评估 |
+| 56 | `56_eval_scene_gated_l5_direct_expert.py`：跨设备 L5 direct MLP 的负结果/对照评估 |
+| 57 | `57_eval_scene_gated_l5_self_calibrated.py`：每个源流的 L5 C/N0 下尾自校准 direct 规则 |
+| 58 | `58_run_complete_scene_response_diagnosis_cv.py`：组合 Watch 与 L5 修复并输出完整六折结果 |
+
+常规复现顺序为先运行 `55_run_scene_gated_watch_anomaly_cv.py`，再运行 `58_run_complete_scene_response_diagnosis_cv.py`。两者均把生成物写入 `output/`，不提交仓库。
 
 ## 38–40：统一静态+动态逐 signal 4-fold 基线
 
