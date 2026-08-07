@@ -99,6 +99,7 @@ python pipeline_total/19_generate_static_timeblock_protocol.py
 - [方案优化实验清单](docs/optimization_experiment_plan_zh.md)：特征消融、模型比较、融合、轻量化和检测时延实验顺序；
 - [方案优化结果记录](docs/optimization_experiment_results_zh.md)：O0 基线及逐项优化实验的配置、指标和决策；
 - [场景条件化频段响应诊断](docs/scene_conditioned_response_audit_20260807.md)：当前频段级标签、L5 消失型异常和六折覆盖审计；
+- [响应分支交接说明](docs/response_branch_handoff_20260807.md)：响应分支的标签重构、当前边界、代码入口与后续工作；
 - [场景门控的设备响应联合诊断（历史）](docs/complete_scene_response_diagnosis_20260806.md)：旧设备级三分类开发链路与历史对照；
 - [P0–P5 历史实验台账](docs/experiment_registry.md)：旧设备级路线与结果边界；
 - [信号级特征提取](docs/signal_level_feature_extraction.md)：统一 CSV 与逐 signal 数据语义；
