@@ -25,10 +25,23 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--data-dir", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--model", choices=("linear", "mlp"), default="linear")
-    parser.add_argument("--label-key", choices=("y_event", "y_response_state"), default="y_event")
+    parser.add_argument(
+        "--label-key",
+        choices=(
+            "y_event", "y_response_state",
+            "y_associated_anomaly_l1", "y_associated_anomaly_l5",
+            "y_direct_l1", "y_direct_l5",
+        ),
+        default="y_event",
+        help="tensor label; band-specific labels are independent binary targets and do not use legacy state transforms",
+    )
     parser.add_argument(
         "--label-transform", choices=("raw", "abnormal", "anomaly_only", "response_type", "direct"), default="raw",
         help="raw keeps the selected label; abnormal maps response states 1/2 to one; anomaly_only maps anomaly to one and excludes direct rows; response_type keeps states 1/2 and maps anomaly/direct to 0/1; direct maps state 2 to one",
+    )
+    parser.add_argument(
+        "--sample-scope", choices=("all", "associated_l1", "associated_l5"), default="all",
+        help="associated_* keeps attack-active, baseline-capable, non-target windows; current band loss remains eligible evidence",
     )
     parser.add_argument("--num-classes", type=int, default=0, help="override class count; inferred from train/val when omitted")
     parser.add_argument("--hidden-dim", type=int, default=16)
@@ -70,6 +83,14 @@ def parse_args() -> argparse.Namespace:
         parser.error("thresholds must be strictly between zero and one")
     if not 0.0 <= args.max_val_far <= 1.0:
         parser.error("max-val-far must be in [0, 1]")
+    expected_label = {
+        "associated_l1": "y_associated_anomaly_l1",
+        "associated_l5": "y_associated_anomaly_l5",
+    }.get(args.sample_scope)
+    if expected_label is not None and args.label_key != expected_label:
+        parser.error(f"--sample-scope {args.sample_scope} requires --label-key {expected_label}")
+    if args.sample_scope != "all" and args.label_transform != "raw":
+        parser.error("Scene-conditioned associated-anomaly labels are already binary; use --label-transform raw")
     return args
 
 
@@ -91,9 +112,16 @@ class EventDataset(Dataset):
         include_device_ids: set[int] | None = None,
         label_transform: str = "raw",
         include_recording_ids: set[int] | None = None,
+        sample_scope: str = "all",
     ) -> None:
         with np.load(path, allow_pickle=False) as data:
-            if missing := self.REQUIRED.union({label_key}).difference(data.files):
+            required = self.REQUIRED.union({label_key})
+            scope_keys = {
+                "associated_l1": {"y_event", "baseline_has_l1", "y_target_l1"},
+                "associated_l5": {"y_event", "baseline_has_l5", "y_target_l5"},
+            }
+            required.update(scope_keys.get(sample_scope, set()))
+            if missing := required.difference(data.files):
                 raise ValueError(f"{path} is missing {sorted(missing)}")
             self.x = torch.from_numpy(data["x"].astype(np.float32))
             labels = data[label_key].astype(np.int64)
@@ -101,6 +129,14 @@ class EventDataset(Dataset):
             self.recording_id = torch.from_numpy(data["recording_id"].astype(np.int64))
             self.source_id = torch.from_numpy(data["source_id"].astype(np.int64))
             self.endpoint_tow = torch.from_numpy(data["endpoint_tow"].astype(np.float64))
+            if sample_scope == "associated_l1":
+                scope_selected = (data["y_event"] == 1) & (data["baseline_has_l1"] == 1) & (data["y_target_l1"] == 0)
+            elif sample_scope == "associated_l5":
+                scope_selected = (data["y_event"] == 1) & (data["baseline_has_l5"] == 1) & (data["y_target_l5"] == 0)
+            elif sample_scope == "all":
+                scope_selected = np.ones(len(labels), dtype=bool)
+            else:
+                raise ValueError(f"Unsupported sample scope: {sample_scope}")
         if label_transform == "abnormal":
             labels = (labels > 0).astype(np.int64)
         elif label_transform == "anomaly_only":
@@ -115,8 +151,8 @@ class EventDataset(Dataset):
         elif label_transform != "raw":
             raise ValueError(f"Unsupported label transform: {label_transform}")
         self.y = torch.from_numpy(labels)
-        if include_device_ids is not None or include_recording_ids is not None:
-            selected = torch.ones(len(self.device_id), dtype=torch.bool)
+        if include_device_ids is not None or include_recording_ids is not None or sample_scope != "all":
+            selected = torch.from_numpy(scope_selected.astype(bool))
         if include_device_ids is not None:
             device_selected = torch.zeros(len(self.device_id), dtype=torch.bool)
             for device_id in include_device_ids:
@@ -127,7 +163,7 @@ class EventDataset(Dataset):
             for recording_id in include_recording_ids:
                 recording_selected |= self.recording_id == recording_id
             selected &= recording_selected
-        if include_device_ids is not None or include_recording_ids is not None:
+        if include_device_ids is not None or include_recording_ids is not None or sample_scope != "all":
             self.x = self.x[selected]
             self.y = self.y[selected]
             self.device_id = self.device_id[selected]
@@ -316,6 +352,25 @@ def load_checkpoint_model(checkpoint_path: Path, device: torch.device, input_dim
     return checkpoint, model
 
 
+def validate_checkpoint_task_contract(checkpoint: dict[str, Any], args: argparse.Namespace) -> None:
+    """Prevent evaluation with a checkpoint trained for a different label task."""
+    checkpoint_label = checkpoint.get("label_key")
+    checkpoint_transform = checkpoint.get("label_transform")
+    checkpoint_scope = checkpoint.get("sample_scope", "all")
+    if checkpoint_label is not None and checkpoint_label != args.label_key:
+        raise ValueError(
+            f"Checkpoint label key {checkpoint_label!r} differs from requested {args.label_key!r}"
+        )
+    if checkpoint_transform is not None and checkpoint_transform != args.label_transform:
+        raise ValueError(
+            f"Checkpoint label transform {checkpoint_transform!r} differs from requested {args.label_transform!r}"
+        )
+    if checkpoint_scope != args.sample_scope:
+        raise ValueError(
+            f"Checkpoint sample scope {checkpoint_scope!r} differs from requested {args.sample_scope!r}"
+        )
+
+
 def calibrate_checkpoint(
     args: argparse.Namespace,
     device_names: dict[int, str],
@@ -326,8 +381,10 @@ def calibrate_checkpoint(
     calibration_data_dir = args.calibration_data_dir or args.data_dir
     val = EventDataset(
         calibration_data_dir / "val.npz", args.label_key, include_device_ids, args.label_transform, include_recording_ids,
+        args.sample_scope,
     )
     checkpoint, model = load_checkpoint_model(args.checkpoint, device, val.x.shape[1])
+    validate_checkpoint_task_contract(checkpoint, args)
     if int(checkpoint.get("num_classes", 2)) != 2:
         raise ValueError("--calibrate-only currently applies only to binary checkpoints")
     negative_support = int((val.y == 0).sum().item())
@@ -412,8 +469,10 @@ def main() -> None:
     if args.test_only:
         test = EventDataset(
             args.data_dir / "test.npz", args.label_key, include_device_ids, args.label_transform, include_recording_ids,
+            args.sample_scope,
         )
         checkpoint, model = load_checkpoint_model(args.checkpoint, device, test.x.shape[1])
+        validate_checkpoint_task_contract(checkpoint, args)
         args.output_dir.mkdir(parents=True, exist_ok=True)
         num_classes = int(checkpoint.get("num_classes", 2))
         threshold = float(checkpoint.get("alarm_threshold", 0.5)) if num_classes == 2 else None
@@ -425,9 +484,11 @@ def main() -> None:
 
     train = EventDataset(
         args.data_dir / "train.npz", args.label_key, include_device_ids, args.label_transform, include_recording_ids,
+        args.sample_scope,
     )
     val = EventDataset(
         args.data_dir / "val.npz", args.label_key, include_device_ids, args.label_transform, include_recording_ids,
+        args.sample_scope,
     )
     if len(val) == 0:
         raise ValueError("Validation is empty; use a tensor directory with an inner validation split")
@@ -470,7 +531,7 @@ def main() -> None:
         "model": args.model, "input_dim": int(train.x.shape[1]), "hidden_dim": args.hidden_dim, "dropout": args.dropout,
         "best_val_macro_f1": best_score, "state_dict": best_state, "task": "device_attack_event",
         "label_key": args.label_key, "num_classes": num_classes,
-        "label_transform": args.label_transform,
+        "label_transform": args.label_transform, "sample_scope": args.sample_scope,
         "label_semantics": metadata.get("label_semantics"),
         "included_device_names": args.include_devices, "included_scenarios": args.include_scenarios,
     }, checkpoint_path)

@@ -4,14 +4,14 @@
 
 ## 当前状态
 
-截至 2026-08-06：
+截至 2026-08-07：
 
 - 正式数据口径为 123 份原始日志：操场 89 份、新主楼 34 份；大文件、中央 CSV、张量、checkpoint 和图像均保留在本地 `output/`，不提交 Git。
-- 当前最终候选是“**频段场景识别 + 设备响应联合诊断**”：场景分支输出 `normal/L1/L5/L1+L5`，设备分支输出 `normal/anomaly/direct`，以区分直接受骗与攻击关联异常。
+- 当前正式路线是“**频段场景识别 + 场景条件化频段响应诊断**”：场景分支输出 `normal/L1/L5/L1+L5`；目标频段按场景语义输出 `direct`，非目标频段以攻击前频段能力、当前可用性与质量变化形成可解释的关联异常诊断证据。
 - 完整 7-fold `compact11 + TCN16` 是当前保留对照基线；其结果与近期 Fold 6 诊断实验使用的特征集、refit 协议和评价口径不同，不能只按单个 pooled 分数排序。
 - Fold 6 的 outer test 已被多次读取以诊断错误结构。E9-E11 因而只能作为迭代式开发诊断，而非新的独立盲测结果。
-- 已完成静态六折完整诊断链：四维 C/N0-only + TCN 场景分支（pooled Macro-F1=0.9921，Accuracy=0.9944），结合 44 维 C/N0 设备响应 backbone、Watch L1 压制异常专家和 L5 自校准 direct 证据。完整系统 pooled Macro-F1=0.9802、FAR=0.863%、abnormal recall=99.05%、anomaly recall=98.76%、direct recall=98.98%。
-- 该方案针对并缓解了 L5 场景下 Watch 无 L5 观测但 L1 受压制的关联异常漏检，以及 Pixel6 等异构设备的 L5 direct 响应迁移失配；Watch 的 L1 压制输出为 `anomaly`，而不错误标为 L5 `direct`。
+- 场景分支已完成静态六折评估：四维 C/N0-only + TCN 的 pooled Macro-F1=0.9921、Accuracy=0.9944。旧设备级三分类完整链路的 pooled Macro-F1=0.9802 已因标签结构性错误降为历史对照，不能作为论文最终结果。
+- 已人工确认两种频段关联异常：L5 攻击下的 L1 压制/可用性下降，以及 L1 攻击下部分设备的 L5 可用性（跟踪）丢失。当前静态数据缺少响应分类所需的跨录制正负类覆盖，因此响应层暂不报告六折泛化分数。
 - 方案优化阶段 3 已完成：场景分支经过 S1–S5 六折特征消融后，确定四维 C/N0-only + TCN 为当前正式候选，pooled Macro-F1=0.9921、Accuracy=0.9944。
 - 当前结果仍以静态六折完整诊断为候选。2026-08-06 的 mixed 四折动态场景扩展显示：四维 C/N0 场景模型在纯动态子集仅为 Macro-F1=0.5412（L5 recall=25.89%，L1+L5 recall=10.99%）；加入因果 C/N0 斜率、波动和有效观测数后升至 0.5819（34.23%、23.63%），但仍不能作为动态场景门控或端到端动态诊断结果。
 - 动态设备响应的 `normal/anomaly/direct` 真值尚未完成审查；TTD（检测时延）、端到端模型大小/推理耗时，以及更严格的独立盲测仍是下一阶段工作。
@@ -60,7 +60,7 @@ PNG 只是标签复核辅助图；02 与 22 均只读取配置中的显式 Sessi
 
 当前正式的 Session 级标签一致性审查入口为 `22_generate_label_review_dashboards.py`；02 继续用于逐设备、逐特征单图复核。
 
-最终设备联合诊断的完整配置、结果与复现顺序见 [场景门控的设备响应联合诊断](docs/complete_scene_response_diagnosis_20260806.md)；其脚本索引和完整参数见 [pipeline_total/README.md](pipeline_total/README.md)。
+场景条件化频段响应诊断的当前结论、标签语义与覆盖审计见 [场景条件化频段响应诊断](docs/scene_conditioned_response_audit_20260807.md)；旧完整链路仅作为[历史开发记录](docs/complete_scene_response_diagnosis_20260806.md)保留。脚本索引见 [pipeline_total/README.md](pipeline_total/README.md)。
 
 ## 基础重建
 
@@ -98,7 +98,8 @@ python pipeline_total/19_generate_static_timeblock_protocol.py
 - [论文主线大纲](docs/paper_mainline_outline_zh.md)：论文题目、问题定义、方法、实验组织和结果表述边界；
 - [方案优化实验清单](docs/optimization_experiment_plan_zh.md)：特征消融、模型比较、融合、轻量化和检测时延实验顺序；
 - [方案优化结果记录](docs/optimization_experiment_results_zh.md)：O0 基线及逐项优化实验的配置、指标和决策；
-- [场景门控的设备响应联合诊断](docs/complete_scene_response_diagnosis_20260806.md)：当前静态六折完整候选方案、关键结果、复现顺序和适用边界；
+- [场景条件化频段响应诊断](docs/scene_conditioned_response_audit_20260807.md)：当前频段级标签、L5 消失型异常和六折覆盖审计；
+- [场景门控的设备响应联合诊断（历史）](docs/complete_scene_response_diagnosis_20260806.md)：旧设备级三分类开发链路与历史对照；
 - [P0–P5 历史实验台账](docs/experiment_registry.md)：旧设备级路线与结果边界；
 - [信号级特征提取](docs/signal_level_feature_extraction.md)：统一 CSV 与逐 signal 数据语义；
 - [动态标签辅助](docs/dynamic_labeling_assistant.md)：新主楼动态场景复核流程；

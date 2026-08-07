@@ -26,6 +26,11 @@ RESPONSE_STATE_TO_ID = {
     "attack_associated_anomaly": 1,
     "direct_spoof": 2,
 }
+BAND_NAME_TO_ID = {"L1": 1, "L5": 5}
+SCENARIO_TARGET_BANDS = {
+    "st_L1": {1}, "st_L5": {5}, "st_L_15": {1, 5},
+    "dy_L1": {1}, "dy_L5": {5}, "dy_L_15": {1, 5},
+}
 REQUIRED_STATS = (
     "Cn0DbHzLastW5", "Cn0DbHzSlopeW5", "AgcDbLastW5", "AgcDbStdW5",
     "ReceivedSvTimeUncertaintyNanosStdW5", "IsL5", "SignalHistoryRatioW5",
@@ -38,6 +43,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--signal-data-dir", type=Path, required=True)
     parser.add_argument("--label-config", type=Path, default=ROOT / "configs" / "preprocessing.yml")
     parser.add_argument("--response-labels", type=Path, default=ROOT / "docs" / "device_response_intervals.csv")
+    parser.add_argument(
+        "--band-association-labels", type=Path,
+        default=ROOT / "docs" / "device_band_association_intervals.csv",
+        help="frequency-specific associated-anomaly intervals; retained independently from legacy response states",
+    )
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument(
         "--device-aggregate-profile", choices=("robust", "sparse_extreme"), default="robust",
@@ -51,6 +61,7 @@ def parse_args() -> argparse.Namespace:
             "initial_baseline_delta_no_cross", "initial_baseline_delta_cn0_compact",
             "initial_baseline_delta_cn0_extreme",
             "initial_baseline_delta_l1_cn0_extreme",
+            "initial_baseline_delta_l5_cn0_extreme",
             "initial_baseline_delta_with_capability", "initial_baseline_delta_no_cross_with_capability",
         ), default="all",
     )
@@ -110,6 +121,41 @@ def read_response_rows(path: Path) -> list[dict[str, Any]]:
                 "DeviceName": str(row["DeviceName"]).strip(),
                 "state_id": RESPONSE_STATE_TO_ID[state],
                 "response_state": state,
+                "start_tow": start,
+                "end_tow": end,
+                "line_no": line_no,
+            })
+    return rows
+
+
+def read_band_association_rows(path: Path) -> list[dict[str, Any]]:
+    """Read non-target-band associated-anomaly intervals without a direct-class override."""
+    if not path.exists():
+        return []
+    required = {
+        "Environment", "Scenario", "Session", "DeviceName", "response_band", "start_tow", "end_tow",
+    }
+    rows: list[dict[str, Any]] = []
+    with path.open("r", encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle)
+        if reader.fieldnames is None:
+            return []
+        if missing := required.difference(reader.fieldnames):
+            raise ValueError(f"{path} missing band-association columns {sorted(missing)}")
+        for line_no, row in enumerate(reader, start=2):
+            band_name = str(row["response_band"]).strip().upper()
+            if band_name not in BAND_NAME_TO_ID:
+                raise ValueError(f"Unsupported response_band {band_name!r} at {path}:{line_no}")
+            start, end = float(row["start_tow"]), float(row["end_tow"])
+            if end < start:
+                raise ValueError(f"Descending band-association interval at {path}:{line_no}")
+            rows.append({
+                "Environment": str(row["Environment"]).strip(),
+                "Scenario": str(row["Scenario"]).strip(),
+                "Session": str(row["Session"]).strip(),
+                "DeviceName": str(row["DeviceName"]).strip(),
+                "band": BAND_NAME_TO_ID[band_name],
+                "response_band": band_name,
                 "start_tow": start,
                 "end_tow": end,
                 "line_no": line_no,
@@ -252,6 +298,71 @@ def response_labels_from_rows(
     return labels
 
 
+def target_band_labels(recording_ids: np.ndarray, trace: dict[str, Any]) -> dict[int, np.ndarray]:
+    """Return scenario-defined target-band masks, independent of signal visibility."""
+    recordings = trace.get("recordings")
+    if not isinstance(recordings, list):
+        raise ValueError("window_trace_index.json has no recording index")
+    labels = {band: np.zeros(len(recording_ids), dtype=np.int64) for band in BAND_NAME_TO_ID.values()}
+    for index, recording_id in enumerate(recording_ids):
+        scenario = str(recordings[int(recording_id)].get("Scenario", ""))
+        for band in SCENARIO_TARGET_BANDS.get(scenario, set()):
+            labels[band][index] = 1
+    return labels
+
+
+def band_association_labels_from_rows(
+    recording_ids: np.ndarray,
+    source_ids: np.ndarray,
+    tows: np.ndarray,
+    trace: dict[str, Any],
+    association_rows: list[dict[str, Any]],
+) -> dict[int, np.ndarray]:
+    """Return independent L1/L5 association labels for each device window.
+
+    Unlike the legacy device-level response state, these labels deliberately do
+    not collapse direct and associated responses into one mutually exclusive
+    class. A dual-band receiver may therefore be direct on one band and
+    associated-anomalous on the other at the same endpoint.
+    """
+    labels = {band: np.zeros(len(recording_ids), dtype=np.int64) for band in BAND_NAME_TO_ID.values()}
+    if not association_rows:
+        return labels
+    sources, recordings = trace.get("sources"), trace.get("recordings")
+    if not isinstance(sources, list) or not isinstance(recordings, list):
+        raise ValueError("window_trace_index.json must contain source and recording indexes")
+    rules: dict[tuple[str, str, str, str, int], list[dict[str, Any]]] = {}
+    for row in association_rows:
+        key = (row["Environment"], row["Scenario"], row["Session"], row["DeviceName"], int(row["band"]))
+        rules.setdefault(key, []).append(row)
+    for index, (recording_id, source_id, tow) in enumerate(zip(recording_ids, source_ids, tows)):
+        source, recording = sources[int(source_id)], recordings[int(recording_id)]
+        prefix = (
+            str(recording["Environment"]), str(recording["Scenario"]),
+            str(recording["Session"]), str(source["DeviceName"]),
+        )
+        for band in BAND_NAME_TO_ID.values():
+            if any(rule["start_tow"] <= float(tow) <= rule["end_tow"] for rule in rules.get((*prefix, band), [])):
+                labels[band][index] = 1
+    return labels
+
+
+def validate_band_response_contract(
+    event_y: np.ndarray,
+    target_y: dict[int, np.ndarray],
+    association_y: dict[int, np.ndarray],
+) -> None:
+    """Reject hand labels that contradict the scene-conditioned protocol."""
+    for band in BAND_NAME_TO_ID.values():
+        invalid = (association_y[band] == 1) & ((event_y != 1) | (target_y[band] == 1))
+        if np.any(invalid):
+            examples = np.flatnonzero(invalid)[:5].tolist()
+            raise ValueError(
+                f"Associated-anomaly labels for L{band} must be inside a reviewed attack "
+                f"and on a non-target band; invalid window indices={examples}"
+            )
+
+
 def select_feature_indices(names: list[str], feature_set: str) -> list[int]:
     if feature_set == "all":
         selected = names
@@ -321,7 +432,7 @@ def select_feature_indices(names: list[str], feature_set: str) -> list[int]:
                 if name.startswith(prefix) and name[len(prefix):] in extreme_suffixes:
                     selected.append(name)
                     break
-    elif feature_set == "initial_baseline_delta_l1_cn0_extreme":
+    elif feature_set in ("initial_baseline_delta_l1_cn0_extreme", "initial_baseline_delta_l5_cn0_extreme"):
         # Compact suppression signature for single-frequency receivers.  These
         # are all changes relative to the reviewed pre-attack baseline; raw
         # C/N0 levels and unavailable L5 fields are intentionally excluded.
@@ -338,7 +449,8 @@ def select_feature_indices(names: list[str], feature_set: str) -> list[int]:
             "cn0_slope_top3_mean",
             "cn0_slope_bottom3_mean",
         }
-        prefix = "initial_baseline_delta_l1_"
+        band = "l1" if feature_set.endswith("l1_cn0_extreme") else "l5"
+        prefix = f"initial_baseline_delta_{band}_"
         selected = [
             name for name in names
             if name.startswith(prefix) and name[len(prefix):] in extreme_suffixes
@@ -374,6 +486,7 @@ def load_device_split(
     intervals: dict[int, list[tuple[float, float]]],
     trace: dict[str, Any],
     response_rows: list[dict[str, Any]],
+    association_rows: list[dict[str, Any]],
     profile: str,
 ) -> tuple[dict[str, np.ndarray], list[str]]:
     raw_path = signal_dir / "raw" / f"{split}.npz"
@@ -402,12 +515,37 @@ def load_device_split(
         direct_positive = (raw["y"] == 1) & raw["mask"]
         if np.any(direct_positive.any(axis=1) & (event_y == 0)):
             raise ValueError(f"Direct target-band positives fall outside an event interval in {split}")
+        # Retained only for backwards-compatible comparison.  New experiments
+        # must use the independent per-band labels below, not this legacy
+        # mutually-exclusive device state.
         response_y = response_labels_from_rows(recording_ids, source_ids, raw["endpoint_tow"], trace, response_rows)
         response_y[direct_positive.any(axis=1)] = RESPONSE_STATE_TO_ID["direct_spoof"]
+        is_l5 = stats["x"][:, :, 0, index["IsL5"]] >= 0.5
+        active = raw["mask"].astype(bool)
+        has_l1 = (active & ~is_l5).any(axis=1).astype(np.int64)
+        has_l5 = (active & is_l5).any(axis=1).astype(np.int64)
+        association_y = band_association_labels_from_rows(
+            recording_ids, source_ids, raw["endpoint_tow"], trace, association_rows,
+        )
+        target_y = target_band_labels(recording_ids, trace)
+        validate_band_response_contract(event_y, target_y, association_y)
+        # Direct is defined by the reviewed scene target and frequency
+        # availability during the attack interval.  It therefore does not
+        # overwrite a simultaneous associated-anomaly label on the other band.
+        direct_l1 = ((event_y == 1) & (target_y[1] == 1) & (has_l1 == 1)).astype(np.int64)
+        direct_l5 = ((event_y == 1) & (target_y[5] == 1) & (has_l5 == 1)).astype(np.int64)
         return {
             "x": x,
             "y_event": event_y,
             "y_response_state": response_y,
+            "y_associated_anomaly_l1": association_y[1],
+            "y_associated_anomaly_l5": association_y[5],
+            "y_target_l1": target_y[1],
+            "y_target_l5": target_y[5],
+            "y_direct_l1": direct_l1,
+            "y_direct_l5": direct_l5,
+            "has_l1": has_l1,
+            "has_l5": has_l5,
             "device_id": raw["device_id"].astype(np.int64),
             "recording_id": recording_ids,
             "source_id": source_ids,
@@ -460,9 +598,18 @@ def append_initial_baseline_deltas(
     to calculate the values.
     """
     if baseline_windows == 0:
+        # A current missing band is diagnostically meaningful only if the
+        # receiver had that band during a reviewed-normal reference period.
+        # Without such a reference, scene-conditioned availability tasks are
+        # deliberately ineligible rather than treating unsupported hardware
+        # as an anomaly.
+        data["baseline_has_l1"] = np.zeros(len(data["x"]), dtype=np.int64)
+        data["baseline_has_l5"] = np.zeros(len(data["x"]), dtype=np.int64)
         return names
     values = data["x"].astype(np.float64, copy=False)
     deltas = np.full_like(values, np.nan, dtype=np.float64)
+    baseline_has_l1 = np.zeros(len(values), dtype=np.int64)
+    baseline_has_l5 = np.zeros(len(values), dtype=np.int64)
     recording_ids = data["recording_id"]
     source_ids = data["source_id"]
     endpoint_times = data["endpoint_utc_millis"]
@@ -490,7 +637,11 @@ def append_initial_baseline_deltas(
             out=np.full(values.shape[1], np.nan, dtype=np.float64), where=count > 0,
         )
         deltas[ordered] = values[ordered] - reference
+        baseline_has_l1[ordered] = int(np.any(data["has_l1"][baseline] == 1))
+        baseline_has_l5[ordered] = int(np.any(data["has_l5"][baseline] == 1))
     data["x"] = np.concatenate((values, deltas.astype(np.float32)), axis=1).astype(np.float32)
+    data["baseline_has_l1"] = baseline_has_l1
+    data["baseline_has_l5"] = baseline_has_l5
     return [*names, *[f"initial_baseline_delta_{name}" for name in names]]
 
 
@@ -600,7 +751,7 @@ def main() -> None:
         raise ValueError("reference window counts must be non-negative")
     if args.initial_baseline_offset_windows < 0:
         raise ValueError("--initial-baseline-offset-windows must be non-negative")
-    if args.feature_set in ("initial_baseline_delta_only", "initial_baseline_delta_with_device", "initial_baseline_delta_l1_with_device", "initial_baseline_delta_no_cross", "initial_baseline_delta_cn0_compact", "initial_baseline_delta_cn0_extreme", "initial_baseline_delta_l1_cn0_extreme", "initial_baseline_delta_with_capability", "initial_baseline_delta_no_cross_with_capability") and args.initial_baseline_windows == 0:
+    if args.feature_set in ("initial_baseline_delta_only", "initial_baseline_delta_with_device", "initial_baseline_delta_l1_with_device", "initial_baseline_delta_no_cross", "initial_baseline_delta_cn0_compact", "initial_baseline_delta_cn0_extreme", "initial_baseline_delta_l1_cn0_extreme", "initial_baseline_delta_l5_cn0_extreme", "initial_baseline_delta_with_capability", "initial_baseline_delta_no_cross_with_capability") and args.initial_baseline_windows == 0:
         raise ValueError("initial baseline feature sets require --initial-baseline-windows")
     if args.output_dir.exists() and any(args.output_dir.iterdir()) and not args.overwrite:
         raise FileExistsError(f"Output directory is not empty: {args.output_dir}")
@@ -614,11 +765,13 @@ def main() -> None:
     config = yaml.safe_load(args.label_config.read_text(encoding="utf-8"))
     intervals = reviewed_intervals(trace, config)
     response_rows = read_response_rows(args.response_labels)
+    association_rows = read_band_association_rows(args.band_association_labels)
     datasets: dict[str, dict[str, np.ndarray]] = {}
     feature_names: list[str] | None = None
     for split in SPLITS:
         data, candidate_names = load_device_split(
-            args.signal_data_dir, split, index, intervals, trace, response_rows, args.device_aggregate_profile,
+            args.signal_data_dir, split, index, intervals, trace, response_rows, association_rows,
+            args.device_aggregate_profile,
         )
         if feature_names is None and candidate_names:
             feature_names = candidate_names
@@ -690,11 +843,18 @@ def main() -> None:
     (args.output_dir / "scaler.json").write_text(json.dumps(scaler, indent=2), encoding="utf-8")
     metadata = {
         "task": "device_attack_event",
-        "label_semantics": "reviewed session attack interval independent of direct target frequency",
-        "response_label_semantics": "0=normal/no observable response, 1=attack-associated anomaly, 2=direct spoof",
+        "label_semantics": "reviewed session attack interval independent of target-frequency visibility",
+        "response_label_semantics": "LEGACY ONLY: 0=normal/no observable response, 1=attack-associated anomaly, 2=direct spoof; direct overwrites anomaly and must not be used for the new protocol",
+        "band_response_label_semantics": {
+            "direct": "event_active AND scenario_target_band AND observed_band; independent for L1 and L5",
+            "associated_anomaly": "manual device-band interval inside a reviewed attack and on a non-target band; independent for L1 and L5",
+            "normal_candidate": "event_active AND baseline_capable_non_target_band AND not manually labeled associated_anomaly",
+            "availability_anomaly": "baseline_capable_non_target_band AND current band unavailable during an associated-anomaly interval",
+        },
         "signal_data_dir": str(args.signal_data_dir),
         "label_config": str(args.label_config),
         "response_labels": str(args.response_labels),
+        "band_association_labels": str(args.band_association_labels),
         "feature_set": args.feature_set,
         "device_aggregate_profile": args.device_aggregate_profile,
         "causal_reference_windows": args.causal_reference_windows,
@@ -708,6 +868,7 @@ def main() -> None:
         "device_mapping": read_json(args.signal_data_dir / "device_mapping.json"),
         "recordings": trace["recordings"],
         "response_label_rows": response_rows,
+        "band_association_label_rows": association_rows,
         "splits": {
             split: {
                 "windows": int(len(data["x"])),
@@ -716,6 +877,22 @@ def main() -> None:
                 "response_state_counts": {
                     str(state): int((data["y_response_state"] == state).sum())
                     for state in range(3)
+                },
+                "band_response_counts": {
+                    "associated_anomaly_l1": int(data["y_associated_anomaly_l1"].sum()),
+                    "associated_anomaly_l5": int(data["y_associated_anomaly_l5"].sum()),
+                    "target_l1": int(data["y_target_l1"].sum()),
+                    "target_l5": int(data["y_target_l5"].sum()),
+                    "direct_l1": int(data["y_direct_l1"].sum()),
+                    "direct_l5": int(data["y_direct_l5"].sum()),
+                    "has_l1": int(data["has_l1"].sum()),
+                    "has_l5": int(data["has_l5"].sum()),
+                    "baseline_has_l1": int(data["baseline_has_l1"].sum()),
+                    "baseline_has_l5": int(data["baseline_has_l5"].sum()),
+                    "eligible_association_l1": int(((data["y_event"] == 1) & (data["baseline_has_l1"] == 1) & (data["y_target_l1"] == 0)).sum()),
+                    "eligible_association_l5": int(((data["y_event"] == 1) & (data["baseline_has_l5"] == 1) & (data["y_target_l5"] == 0)).sum()),
+                    "association_l1_positive_eligible": int(((data["y_event"] == 1) & (data["baseline_has_l1"] == 1) & (data["y_target_l1"] == 0) & (data["y_associated_anomaly_l1"] == 1)).sum()),
+                    "association_l5_positive_eligible": int(((data["y_event"] == 1) & (data["baseline_has_l5"] == 1) & (data["y_target_l5"] == 0) & (data["y_associated_anomaly_l5"] == 1)).sum()),
                 },
             }
             for split, data in datasets.items()

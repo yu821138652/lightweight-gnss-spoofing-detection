@@ -15,7 +15,7 @@ L1: associated_anomaly
 
 ## 2. 新的树结构
 
-场景分支先输出 `normal / L1 / L5 / L1+L5`。响应分支不再与 direct 竞争类别，而是只对**非目标且可观测的频段**判断：
+场景分支先输出 `normal / L1 / L5 / L1+L5`。响应诊断不再与 direct 竞争类别，而是只对**非目标且攻击前基线具备该频段能力**的频段判断：
 
 ```text
 scene=normal: 不触发攻击响应诊断
@@ -24,7 +24,7 @@ scene=L5:    L5 为 target/direct；L1 做 normal vs associated_anomaly
 scene=L1+L5: L1、L5 都为 target/direct；当前人工复核无关联异常
 ```
 
-`direct` 由场景目标频段与设备频段可用性共同给出；`associated_anomaly` 是独立的频段级标签。因此 Watch 在 L5 攻击下虽然不具备 L5，仍作为 L1 非目标频段的异常响应设备参与判断。
+`direct` 由场景目标频段与当前频段可用性共同给出；`associated_anomaly` 是独立的频段级标签。当前频段不可观测并不自动排除关联异常：若攻击前基线具备该频段，攻击中频段消失/显著减少本身就是可用性（跟踪丢失）型关联异常。Watch 在 L5 攻击下虽然不具备 L5，仍作为 L1 非目标频段的异常响应设备参与判断；但它们的 `baseline_has_l5=0`，不会被误纳入 L5 响应任务。
 
 ## 3. 已确认的关联异常真值
 
@@ -45,4 +45,4 @@ scene=L1+L5: L1、L5 都为 target/direct；当前人工复核无关联异常
 
 旧 `y_response_state` 只显式标注过两次 st_L5 下的 Watch L1 异常，其他关联异常默认被视为 normal，且 direct 会覆盖 anomaly。因此其三分类结果只能作为旧标签体系下的开发性对照，不能再作为本文“跨频段关联异常联合诊断”的最终主结果。
 
-场景分支的频段攻击识别结果不受该标签修订影响。后续需要构建频段级 `y_associated_anomaly_L1`、`y_associated_anomaly_L5`（以及必要的 target-band direct 掩码），再训练场景条件化二分类响应分支。
+场景分支的频段攻击识别结果不受该标签修订影响。构建器现已输出频段级 `y_associated_anomaly_l1`、`y_associated_anomaly_l5`、target-band direct 掩码、当前可用性与基线可用性掩码。是否训练场景条件化二分类响应分支必须先通过每折类别覆盖审计；当前静态数据不满足严格六折泛化评估条件，详见 `docs/scene_conditioned_response_audit_20260807.md`。
