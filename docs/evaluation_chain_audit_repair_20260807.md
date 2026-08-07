@@ -83,3 +83,25 @@ $py = 'H:\GNSS\program\Release_Package\Release_Package\venv\Scripts\python.exe'
 3. 每折 Watch 修正数量；
 4. pooled 与按设备结果；
 5. 旧 `0.9802` 结果仅作为“修复前开发性结果”，不与新的可审计正式结果混用。
+
+## 6. 修复后首次完整结果
+
+使用上述 attack-aware fold_2 inner split，并重新运行六折 Watch 分支与完整融合后，得到：
+
+```text
+output/optimization/complete_scene_response_diagnosis_audited_cv_v2/
+  aggregate_complete_scene_response_metrics.json
+```
+
+| 指标 | 修复前开发性结果 | 修复后可审计结果 |
+|---|---:|---:|
+| Accuracy | 99.07% | 99.06% |
+| Macro-F1 | 98.02% | 97.97% |
+| FAR | 0.863% | 0.863% |
+| abnormal recall | 99.05% | 99.01% |
+| anomaly recall | 98.76% | 98.50% |
+| direct recall | 98.98% | 98.98% |
+
+修复后结果略低于旧结果是正常且必要的：fold_2 不再使用全负 validation 上产生的伪校准阈值，而是使用包含 `200` 个 normal 和 `400` 个 anomaly 的 attack-aware inner validation。换言之，旧结果的异常召回略高，但新结果的评估协议更严格、可审计，应该优先作为论文候选主结果。
+
+fold_2 的修复后结果为 Macro-F1 `99.26%`、anomaly recall `98.23%`、direct recall `99.72%`；fold_6 的 anomaly recall 为 `98.72%`。fold_1、4、5、7 的 outer-test anomaly support 为 0，因此这些折的 anomaly recall 显示为 0 只是无该类样本时的统计结果，不能解释为模型在 anomaly 类上的失败。
