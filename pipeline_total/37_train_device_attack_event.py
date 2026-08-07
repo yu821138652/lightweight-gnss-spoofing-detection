@@ -48,6 +48,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--checkpoint", type=Path)
     parser.add_argument("--test-only", action="store_true")
     parser.add_argument("--calibrate-only", action="store_true", help="select an alarm threshold on val.npz using an existing checkpoint")
+    parser.add_argument(
+        "--calibration-data-dir", type=Path,
+        help="optional tensor directory whose val.npz is used for threshold calibration; defaults to --data-dir",
+    )
     parser.add_argument("--thresholds", type=float, nargs="+", default=[0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95])
     parser.add_argument("--max-val-far", type=float, default=0.10)
     parser.add_argument("--dry-run", action="store_true")
@@ -319,14 +323,23 @@ def calibrate_checkpoint(
     include_device_ids: set[int] | None,
     include_recording_ids: set[int] | None,
 ) -> None:
+    calibration_data_dir = args.calibration_data_dir or args.data_dir
     val = EventDataset(
-        args.data_dir / "val.npz", args.label_key, include_device_ids, args.label_transform, include_recording_ids,
+        calibration_data_dir / "val.npz", args.label_key, include_device_ids, args.label_transform, include_recording_ids,
     )
     checkpoint, model = load_checkpoint_model(args.checkpoint, device, val.x.shape[1])
     if int(checkpoint.get("num_classes", 2)) != 2:
         raise ValueError("--calibrate-only currently applies only to binary checkpoints")
+    negative_support = int((val.y == 0).sum().item())
+    positive_support = int((val.y == 1).sum().item())
+    if negative_support == 0 or positive_support == 0:
+        raise ValueError(
+            "Threshold calibration requires both classes in the calibration split; "
+            f"split={calibration_data_dir / 'val.npz'} negative_support={negative_support} "
+            f"positive_support={positive_support}. Refusing to calibrate on a single-class split."
+        )
     probability = probabilities(model, val, device, args.batch_size)
-    metadata = json.loads((args.data_dir / "metadata.json").read_text(encoding="utf-8"))
+    metadata = json.loads((calibration_data_dir / "metadata.json").read_text(encoding="utf-8"))
     candidates = [evaluate_probability(val, probability, threshold, device_names, 2, metadata) for threshold in args.thresholds]
     eligible = [candidate for candidate in candidates if candidate["overall"]["far"] <= args.max_val_far]
     if eligible:
@@ -334,11 +347,28 @@ def calibrate_checkpoint(
     else:
         selected = min(candidates, key=lambda candidate: (candidate["overall"]["far"], -candidate["overall"]["macro_f1"]))
     checkpoint["alarm_threshold"] = float(selected["alarm_threshold"])
-    checkpoint["calibration"] = {"split": "val", "max_val_far": args.max_val_far, "metrics": selected}
+    checkpoint["calibration"] = {
+        "split": "val",
+        "data_dir": str(calibration_data_dir),
+        "max_val_far": args.max_val_far,
+        "negative_support": negative_support,
+        "positive_support": positive_support,
+        "calibration_valid": True,
+        "metrics": selected,
+    }
     args.output_dir.mkdir(parents=True, exist_ok=True)
     calibrated_path = args.output_dir / f"calibrated_{args.checkpoint.name}"
     torch.save(checkpoint, calibrated_path)
-    save_json(args.output_dir / "val_threshold_calibration.json", {"max_val_far": args.max_val_far, "selected": selected, "candidates": candidates})
+    save_json(args.output_dir / "val_threshold_calibration.json", {
+        "split": "val",
+        "data_dir": str(calibration_data_dir),
+        "max_val_far": args.max_val_far,
+        "negative_support": negative_support,
+        "positive_support": positive_support,
+        "calibration_valid": True,
+        "selected": selected,
+        "candidates": candidates,
+    })
     print(json.dumps({"checkpoint": str(calibrated_path), "selected_threshold": selected["alarm_threshold"], "val_metrics": selected["overall"]}, indent=2))
 
 

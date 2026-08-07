@@ -113,6 +113,7 @@ def paths_for_fold(args: argparse.Namespace, fold: int) -> dict[str, Path]:
         "base": response_root / args.base_response_name / "test_response_state_predictions.csv",
         "scene": args.scene_training_root / f"fold_{fold}" / "test_predictions_band_mean_window_tcn.csv",
         "watch": args.watch_output_root / f"fold_{fold}" / "scene_gated_eval" / "test_scene_gated_watch_anomaly_predictions.csv",
+        "watch_audit": args.watch_output_root / f"fold_{fold}" / "watch_calibration_audit.json",
         "self_root": args.self_calibrated_output_root / f"fold_{fold}",
         "self": args.self_calibrated_output_root / f"fold_{fold}" / "test_self_calibrated_l5_direct_predictions.csv",
         "final_root": args.output_root / f"fold_{fold}",
@@ -122,12 +123,20 @@ def paths_for_fold(args: argparse.Namespace, fold: int) -> dict[str, Path]:
 
 def fuse_fold(args: argparse.Namespace, fold: int) -> Path:
     paths = paths_for_fold(args, fold)
-    if args.skip_existing and paths["final"].is_file():
-        print(f"fold {fold}: reusing {paths['final']}", flush=True)
-        return paths["final"]
-    for key in ("tensor", "base", "scene", "watch"):
+    for key in ("tensor", "base", "scene", "watch", "watch_audit"):
         if not paths[key].exists():
             raise FileNotFoundError(f"fold {fold}: missing {key} path {paths[key]}")
+    watch_calibration_audit = json.loads(paths["watch_audit"].read_text(encoding="utf-8"))
+    valid = bool(watch_calibration_audit.get("calibration_valid", False))
+    status = str(watch_calibration_audit.get("status", ""))
+    if not valid and status != "disabled_invalid_calibration":
+        raise ValueError(
+            f"fold {fold}: Watch prediction is not backed by a valid calibration audit; "
+            f"status={status!r}. Refusing to fuse an unaudited Watch branch."
+        )
+    if args.skip_existing and paths["final"].is_file():
+        print(f"fold {fold}: reusing {paths['final']} after Watch calibration audit", flush=True)
+        return paths["final"]
     if not (args.skip_existing and paths["self"].is_file()):
         run([
             str(args.python_exe), str(PIPELINE / "57_eval_scene_gated_l5_self_calibrated.py"),
@@ -170,6 +179,7 @@ def fuse_fold(args: argparse.Namespace, fold: int) -> Path:
     result: dict[str, Any] = {
         "fold": int(fold), "watch_anomaly_repair_count": int(watch_repair.sum()),
         "l5_direct_repair_count": int((merged["self_calibrated_l5_direct_pred_state"].astype(int) != base).sum()),
+        "watch_calibration_audit": watch_calibration_audit,
         "base_metrics": metric_bundle(y, base), "complete_metrics": metric_bundle(y, final), "by_device": {},
     }
     device_names = watch[keys + ["device_name"]]
@@ -196,20 +206,32 @@ def aggregate(args: argparse.Namespace, prediction_paths: list[Path]) -> dict[st
     y = combined["true_state"].astype(int).to_numpy()
     base = combined["pred_state"].astype(int).to_numpy()
     final = combined["complete_pred_state"].astype(int).to_numpy()
+    watch_calibration_audit = {}
+    for fold in args.folds:
+        audit_path = paths_for_fold(args, fold)["watch_audit"]
+        if not audit_path.is_file():
+            raise FileNotFoundError(
+                f"Missing Watch calibration audit for fold {fold}: {audit_path}. "
+                "Refusing to aggregate an unaudited complete diagnosis result."
+            )
+        watch_calibration_audit[str(int(fold))] = json.loads(audit_path.read_text(encoding="utf-8"))
     result: dict[str, Any] = {
         "protocol": "static_time_block_outer_v2",
         "configuration": {
             "watch_anomaly": "MLP-h8, 11-D L1 suppression features, 30-window baseline after 300-window warm-up",
             "l5_direct": "per-stream self-calibrated L5 C/N0 q25, windows 30:60, lower quantile %.3f" % args.lower_quantile,
             "scene_gate": "global pooled L5 posterior confidence >= %.3f" % args.min_scene_confidence,
+            "watch_calibration_audited": True,
         },
         "folds": [int(fold) for fold in args.folds],
+        "watch_calibration_audit": watch_calibration_audit,
         "watch_anomaly_repair_count": int(combined["watch_anomaly_repair_applied"].astype(bool).sum()),
         "base_metrics": metric_bundle(y, base), "complete_metrics": metric_bundle(y, final),
         "by_fold": {}, "by_device": {},
     }
     for fold, group in combined.groupby("fold", sort=True):
         result["by_fold"][str(int(fold))] = {
+            "watch_calibration": watch_calibration_audit[str(int(fold))],
             "watch_anomaly_repair_count": int(group["watch_anomaly_repair_applied"].astype(bool).sum()),
             "complete": metric_bundle(group["true_state"].astype(int).to_numpy(), group["complete_pred_state"].astype(int).to_numpy()),
         }
