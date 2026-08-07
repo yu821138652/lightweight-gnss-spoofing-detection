@@ -1,0 +1,15 @@
+Environment,Scenario,Session,DeviceName,response_band,start_tow,end_tow,source,note
+new_building,st_L5,2025.07.29.20.16_新主楼,Google_Pixel6,L1,217683,218305,manual_review,Full reviewed L5-attack interval; L1 is an attack-associated cross-band anomaly
+new_building,st_L5,2025.07.29.20.16_新主楼,Google_Pixel_Watch1,L1,217683,218305,manual_review,Full reviewed L5-attack interval; Watch has no L5 but shows L1 attack-associated anomaly
+new_building,st_L5,2025.07.29.20.16_新主楼,Google_Pixel_Watch2,L1,217683,218305,manual_review,Full reviewed L5-attack interval; Watch has no L5 but shows L1 attack-associated anomaly
+new_building,st_L5,2025.07.29.20.16_新主楼,HUAWEI_Mate40,L1,217683,218305,manual_review,Full reviewed L5-attack interval; L1 is an attack-associated cross-band anomaly
+new_building,st_L5,2025.07.29.20.16_新主楼,RedMi_K60,L1,217683,218305,manual_review,Full reviewed L5-attack interval; L1 is an attack-associated cross-band anomaly
+new_building,st_L5,2025.07.29.20.16_新主楼,XiaoMi_MI8,L1,217683,218305,manual_review,Full reviewed L5-attack interval; L1 is an attack-associated cross-band anomaly
+playground,st_L1,2025.07.30.08.40_2025.07.30.09.12,Google_Pixel6,L5,262228,262860,manual_review,Full reviewed L1-attack interval; L5 is an attack-associated cross-band anomaly
+playground,st_L1,2025.07.30.08.40_2025.07.30.09.12,XiaoMi_MI8,L5,262228,262860,manual_review,Full reviewed L1-attack interval; L5 is an attack-associated cross-band anomaly
+playground,st_L5,2025.07.30.09.48_2025.07.30.10.14,Google_Pixel6,L1,266310,267054,manual_review,Full reviewed L5-attack interval; L1 is an attack-associated cross-band anomaly
+playground,st_L5,2025.07.30.09.48_2025.07.30.10.14,Google_Pixel_Watch1,L1,266310,267054,manual_review,Full reviewed L5-attack interval; Watch has no L5 but shows L1 attack-associated anomaly
+playground,st_L5,2025.07.30.09.48_2025.07.30.10.14,Google_Pixel_Watch2,L1,266310,267054,manual_review,Full reviewed L5-attack interval; Watch has no L5 but shows L1 attack-associated anomaly
+playground,st_L5,2025.07.30.09.48_2025.07.30.10.14,HUAWEI_Mate40,L1,266310,267054,manual_review,Full reviewed L5-attack interval; L1 is an attack-associated cross-band anomaly
+playground,st_L5,2025.07.30.09.48_2025.07.30.10.14,RedMi_K60,L1,266310,267054,manual_review,Full reviewed L5-attack interval; L1 is an attack-associated cross-band anomaly
+playground,st_L5,2025.07.30.09.48_2025.07.30.10.14,XiaoMi_MI8,L1,266310,267054,manual_review,Full reviewed L5-attack interval; L1 is an attack-associated cross-band anomaly

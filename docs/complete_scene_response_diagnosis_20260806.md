@@ -194,3 +194,11 @@ python pipeline_total/58_run_complete_scene_response_diagnosis_cv.py `
 - 频段级场景识别适用于广播式、多星同频攻击，不能定位具体 PRN；单星或选择性 PRN 欺骗是后续卫星级精细化检测方向。
 - L5 自校准假设启动后的 30--60 窗口包含可用参考。若设备启动时攻击已存在，应保守地禁用该规则，或未来加入基线稳定性/攻击先验检查。
 - 本方案将 L5 场景下 Watch 的 L1 变化标记为 `anomaly`，是基于数据观测的诊断语义；其具体捕获、跟踪或资源竞争机理仍需要芯片级证据进一步验证。
+
+## 7. 2026-08-07 标签体系修订：旧完整链路不再作为最终响应结果
+
+后续人工复核确认：新主楼和操场的 `st_L5` 攻击区间内，全部具备 L1 观测能力的设备均出现 L1 关联异常（包含不具备 L5 的两只 Watch）；操场 `st_L1` 攻击区间内，`Google_Pixel6` 与 `XiaoMi_MI8` 出现 L5 关联异常，其余设备 L5 保持 normal。新主楼 `st_L1` 及两个 `st_L1+L5` 场景未观察到关联异常。
+
+这暴露了本文档中旧设备级三分类标签的结构性限制：双频设备可以在同一时刻具有“目标 L5 direct + 非目标 L1 associated anomaly”，但旧 `normal/anomaly/direct` 互斥标签会将 direct 覆盖 anomaly，未显式标注的关联异常还会默认成为 normal。因此，第 3 节的旧完整链路结果只能作为旧标签体系下的开发性对照，不应再作为论文中跨频段关联异常联合诊断的最终主结果。
+
+新的正式路线改为“场景分支 + 场景条件化频段响应二分类”：场景先确定目标频段；目标频段由此记为 direct，非目标且可观测频段才由响应分支判断 `normal / associated_anomaly`。新真值见 `docs/device_band_association_intervals.csv`，完整语义与重构要求见 `docs/scene_conditioned_band_response_label_spec_zh.md`。场景分支的攻击识别结果不受此修订影响。
