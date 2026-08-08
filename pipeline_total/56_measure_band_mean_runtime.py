@@ -182,7 +182,11 @@ def main() -> None:
     stages.append(classifier_stage)
 
     batch_size = min([args.batch_size, *[len(stage["x"]) for stage in stages]])
-    with torch.inference_mode():
+    # ``inference_mode`` is unavailable in older PyTorch releases used by
+    # some project environments; ``no_grad`` preserves the runtime
+    # measurement semantics in that case.
+    inference_context = getattr(torch, "inference_mode", torch.no_grad)
+    with inference_context():
         for _ in range(args.warmup):
             for stage in stages:
                 stage["model"](stage["x"][:1])
