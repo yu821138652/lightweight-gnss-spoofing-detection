@@ -38,6 +38,19 @@ post_attack : 最后一个 reviewed 攻击窗口之后的 normal 窗口
 
 脚本：`pipeline_total/75_summarize_scene_conditioned_band_response.py`。
 
+### 2.1 统一规则 v2：群体一致性 + 个体严重可用性丢失
+
+v2 对 L1、L5 使用完全相同的频段无关逻辑。场景只定义某频段是 target 还是 non-target；它不决定异常使用哪一种专用规则。
+
+```text
+non-target 关联异常证据 = cohort_consensus_evidence OR individual_availability_loss
+```
+
+- `cohort_consensus_evidence`：同一 Session、同一非目标频段中，至少 4 台具备该频段基线能力的设备里，至少 75% 在攻击期持续 30 个窗口出现同方向的 C/N0 偏离；满足后将该群体解释为共同关联异常。
+- `individual_availability_loss`：该设备攻击前频段可用率至少 90%，攻击期可用率不高于 50%，且攻击后恢复到距基线 10% 以内。
+
+这两条是互补的统一模式，而不是按 L1/L5 写死的条件：前者覆盖多设备共同抑制，后者覆盖少数设备的频段消失。每个参数均写入 JSON 报告，不能在同一结果上静默调节。
+
 ## 3. 可复现命令
 
 ```powershell
@@ -47,14 +60,14 @@ $py = 'H:\GNSS\program\Release_Package\Release_Package\venv\Scripts\python.exe'
   --data-root output/label_repair_v1 `
   --folds 1 2 4 5 6 7 `
   --split test `
-  --output-dir output/analysis/scene_conditioned_band_response_static_v1 `
+  --output-dir output/analysis/scene_conditioned_band_response_static_v3_cohort `
   --overwrite
 ```
 
 输出文件：
 
 ```text
-output/analysis/scene_conditioned_band_response_static_v1/
+output/analysis/scene_conditioned_band_response_static_v3_cohort/
 ├── device_band_response_summary.csv
 ├── device_band_response_windows.csv
 ├── manual_association_label_coverage.csv
@@ -80,6 +93,16 @@ device-band window rows: 99,926
 | `non_target_associated_anomaly` | 13 | 有攻击前能力且在人工复核中确认关联异常 |
 | `non_target_no_associated_anomaly_label` | 4 | 有攻击前能力、但人工复核未标记关联异常 |
 | `non_target_not_applicable_no_baseline_capability` | 4 | 例如 Watch 的 L5：攻击前即无该能力，不适用 L5 响应判断 |
+
+在本次已审核静态 outer-test 汇总中，v2 与可用人工频段标签的一致性为：
+
+```text
+已覆盖的人工关联异常：13 / 13 给出关联异常证据
+人工确认正常的非目标频段：4 / 4 未给出关联异常证据
+未进入 outer-test 张量的人工异常：1 条（不计入上述比较）
+```
+
+这只是当前静态审计集上的**开发性规则一致性**，不是独立盲测 Accuracy，也不能替代后续的新 Session 确认。
 
 ## 5. 标签覆盖审计结果
 
@@ -133,16 +156,17 @@ global_scene_confidence
 
 ```text
 normal -> 不输出攻击相关频段响应结论
-L1     -> L1 可观测时报告 direct；检查 baseline_has_l5=1 的 L5 消失/下降证据
-L5     -> L5 可观测时报告 direct；检查 baseline_has_l1=1 的 L1 压制/可用性下降证据
-L1+L5  -> 两个可观测目标频段均报告 direct；当前静态人工复核未确认额外关联异常
+任一攻击场景 -> 当前可观测的 target band 报告 direct
+任一攻击场景 -> 对每一个 baseline_capable 的 non-target band 运行同一套 v2 规则
+L1+L5 -> 两个可观测目标频段均报告 direct；当前静态人工复核未确认额外关联异常
 ```
 
-这里的“检查”是基于设备自身攻击前基线的规则化证据诊断，不等同于已经通过完整正负 outer-test 验证的通用二分类器。
+这里的“检查”是基于设备自身攻击前基线、同频段设备群体和攻击后恢复的规则化证据诊断，不等同于已经通过完整正负 outer-test 验证的通用二分类器。
 
 ## 8. 下一步与限制
 
 1. 新场景分支文档中声明的 `70–74` 单频路由脚本和 `output/frozen/...` 工件目前未出现在本地 checkout；在其代码和按窗口导出的预测文件同步前，不能把本报告强接为新的端到端融合结果。
 2. 需要统一场景预测导出字段（至少含 fold、recording、device、endpoint_tow、四类 posterior / scene、confidence），再实现严格的一对一窗口对齐与场景误差传递审计。
 3. 动态数据还没有逐设备、逐频段人工响应标签，不能写入本响应证据层的结论。
-4. 现有静态数据没有为每个关联异常子任务提供同时具备 train/validation/test 正负样本的 outer-CV 覆盖；因此继续追求“关联异常分类器六折高分”不成立。当前正确产物是可审计的效应量、可用性变化与恢复案例。
+4. 现有静态数据没有为每个关联异常子任务提供同时具备 train/validation/test 正负样本的 outer-CV 覆盖；因此 v2 的 `13/13` 与 `4/4` 只能作为规则与已审核数据的一致性审计，不能写成泛化 Accuracy。当前正确产物是可审计的效应量、可用性变化、恢复案例和透明规则输出；新 Session 应作为后续确认集。
+5. `cohort_consensus_evidence` 需要至少 4 台具备同一频段基线能力的并行设备；单设备部署或同频段可用设备不足时，该通道自动不适用，只保留设备自身的严重可用性丢失证据，不能把群体结论外推到单设备。
