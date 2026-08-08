@@ -666,7 +666,7 @@ python pipeline_total/35_refit_static_l5_device_heads.py `
 
 ## 36–37、51–58：设备响应历史链与频段标签重构入口
 
-旧场景门控设备响应链的结果不能再作为最终论文指标；原因及当前方案见 `docs/scene_conditioned_response_audit_20260807.md`。其中 36–37 已扩展为频段级标签张量与条件化二分类训练入口，64 用于在训练前审计每折的频段响应类别覆盖；51–58 保留为旧三分类历史对照。
+旧场景门控设备响应链的结果不能再作为最终论文指标；原因及当前方案见 `docs/scene_conditioned_response_audit_20260807.md`。其中 36–37 已扩展为频段级标签张量与条件化二分类训练入口，64 用于在训练前审计每折的频段响应类别覆盖；75 将修复后的频段标签汇总为攻击前/攻击中/攻击后效应量和人工标签覆盖审计。51–58 保留为旧三分类历史对照。
 
 | 脚本 | 作用 |
 |---:|---|
@@ -679,8 +679,9 @@ python pipeline_total/35_refit_static_l5_device_heads.py `
 | 57 | `57_eval_scene_gated_l5_self_calibrated.py`：每个源流的 L5 C/N0 下尾自校准 direct 规则 |
 | 58 | `58_run_complete_scene_response_diagnosis_cv.py`：组合 Watch 与 L5 修复并输出完整六折结果 |
 | 64 | `64_audit_scene_conditioned_band_labels.py`：按 split、场景、设备和频段审计 direct/关联异常标签、基线能力与当前频段可用性 |
+| 75 | `75_summarize_scene_conditioned_band_response.py`：以 reviewed 场景为条件，输出设备×频段攻击前/中/后证据、频段可用性、恢复时序和人工关联异常标签覆盖；不是响应分类器评估 |
 
-旧链的复现顺序为先运行 `55_run_scene_gated_watch_anomaly_cv.py`，再运行 `58_run_complete_scene_response_diagnosis_cv.py`。频段标签重构应先运行 36，再运行 64 审计，确认训练/验证/测试均有有效类别覆盖后才可使用 37。所有生成物均写入 `output/`，不提交仓库。
+旧链的复现顺序为先运行 `55_run_scene_gated_watch_anomaly_cv.py`，再运行 `58_run_complete_scene_response_diagnosis_cv.py`。频段标签重构应先运行 36，再运行 64 审计，确认训练/验证/测试均有有效类别覆盖后才可使用 37。若目的是论文中的可解释响应证据，应在 64 后运行 75，详见 `docs/scene_conditioned_band_response_evidence_20260808.md`。所有生成物均写入 `output/`，不提交仓库。
 
 ## 38–40：统一静态+动态逐 signal 4-fold 基线
 
