@@ -1,6 +1,6 @@
 # 响应分支交接说明：频段级标签重构后的当前进度
 
-> 更新时间：2026-08-07。适用范围：仓库现有、已审核的静态 GNSS 数据。原始张量、审计 JSON、checkpoint 和图像均在本地 `output/`，不提交 Git。
+> 更新时间：2026-08-08。适用范围：仓库现有、已审核的静态 GNSS 数据。原始张量、审计 JSON、checkpoint 和图像均在本地 `output/`，不提交 Git。
 
 ## 1. 当前结论
 
@@ -164,3 +164,85 @@ val：  347 anomaly + 589 normal
   - 新增频段级关联异常标签、基线能力掩码和审计工具；
   - 更新 README、论文主线与历史完整链路的定位。
 
+## 10. 2026-08-08 最新方案与结果
+
+### 10.1 统一响应规则 v2
+
+L1、L5 现在使用同一套频段无关规则，不再分别写死 L1/L5 专用阈值：
+
+```text
+associated_anomaly_evidence
+    = individual_availability_loss OR cohort_consensus_evidence
+```
+
+- `individual_availability_loss`：攻击前可用率至少 90%，攻击期可用率不高于 50%，攻击后恢复到距基线 10% 以内；
+- `cohort_consensus_evidence`：同一 Session、同一非目标频段至少有 4 台基线能力设备，且至少 75% 的设备持续 30 个窗口出现同方向 C/N0 偏离；
+- 同频段设备不足 4 台时，群体通道自动不适用，只保留个体严重可用性丢失证据。
+
+实现：`pipeline_total/75_summarize_scene_conditioned_band_response.py`。
+
+在 6 个静态 outer-test Session 的人工审核覆盖集上：
+
+```text
+人工确认关联异常：13/13 检出
+人工确认正常非目标频段：4/4 未误报
+人工异常但 outer-test 中缺少设备流：1 条，无法评估
+```
+
+这组数字是规则与人工审核集的一致性审计，不是通用分类器泛化 Accuracy。
+
+### 10.2 场景预测驱动的严格端到端融合
+
+当前本地可用的最新静态场景模型预测来自：
+
+```text
+output/training/static_scene_response_fusion_s1_cn0_only/band_scene/
+```
+
+通过 `pipeline_total/50_fuse_static_scene_response_predictions.py`，按
+`(fold, endpoint_tow)` 对齐场景模型预测和响应模型预测，没有使用人工场景标签补齐：
+
+| 指标 | 数值 |
+|---|---:|
+| 响应窗口数 | 49,963 |
+| 场景上下文覆盖率 | 99.8599% |
+| 场景 Macro-F1 | 0.99399 |
+| 设备异常 Recall | 0.93726 |
+| 场景-响应联合 Recall | 0.91451 |
+
+产物目录：
+
+```text
+output/hierarchical_event_v1/static_scene_response_fusion_s1_cn0_only_response44_t020/fusion_recheck/
+```
+
+### 10.3 轻量化与检测延迟
+
+测量环境：Windows CPU，单线程，PyTorch 1.7.1+cpu，输入张量已预构建。
+
+| 模块 | 配置 | 参数量 | 单窗口 P50 | 单窗口 P95 |
+|---|---|---:|---:|---:|
+| 场景分支 | TCN32，4 维输入，T=5 | 4,772 | 0.253 ms | 0.453 ms |
+| 响应 backbone | MLP-h16，44 维，3 类 | 771 | 0.035 ms | 0.048 ms |
+| direct expert | MLP-h16，44 维，2 类 | 754 | 0.042 ms | 0.054 ms |
+| 合计 | 三个轻量前向模块 | 6,297 | 约 0.330 ms | 约 0.555 ms |
+
+TTD 使用 `hold_windows=1`、`max_gap_tow=1.5`：
+
+| 目标 | 检出率 | 中位 TTD | P90 TTD |
+|---|---:|---:|---:|
+| abnormal | 96.55% | 6 TOW | 11.3 TOW |
+| anomaly | 75.00% | 6 TOW | 6 TOW |
+| direct | 100.00% | 6 TOW | 42 TOW |
+
+TTD 当前以 TOW 差值报告；只有确认采样间隔后才能换算成秒。
+
+### 10.4 当前论文边界
+
+当前结果已经足够开始论文的方法、标签重构、规则设计、静态端到端系统和轻量化章节，但定稿时必须说明：
+
+1. 当前严格端到端结果使用的是静态 `s1_cn0_only` 场景预测；mixed 冻结场景产物尚未同步到本地；
+2. `13/13、4/4` 是人工审核集一致性，不是通用分类器准确率；
+3. 动态场景尚缺少逐设备、逐频段人工响应标签，不能直接外推静态响应结论；
+4. 新主楼 `st_L5` 的 Google Pixel6 L1 人工异常区间在当前 outer-test 中缺少设备流；
+5. 场景分支适合广播式多星同频攻击，不能定位单星或选择性 PRN 欺骗。
